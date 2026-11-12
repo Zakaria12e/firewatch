@@ -1,12 +1,15 @@
-import { Map, BarChart2, CirclePlay } from "lucide-react"
+import { Map, BarChart2, CirclePlay, Cpu, Clock, Settings } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
-export type Page = "ops" | "perf" | "scenarios"
+export type Page = "ops" | "perf" | "scenarios" | "devices" | "incidents" | "settings"
 
 const NAV: { id: Page; Icon: LucideIcon; label: string }[] = [
   { id: "ops",       Icon: Map,        label: "Opérations" },
+  { id: "devices",   Icon: Cpu,        label: "Appareils" },
   { id: "perf",      Icon: BarChart2,  label: "Performance" },
   { id: "scenarios", Icon: CirclePlay, label: "Scénarios" },
+  { id: "incidents", Icon: Clock,      label: "Incidents" },
+  { id: "settings",  Icon: Settings,   label: "Paramètres" },
 ]
 
 interface Props {

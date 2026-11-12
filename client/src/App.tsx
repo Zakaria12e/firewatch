@@ -7,6 +7,9 @@ import { FireMap } from "@/components/FireMap"
 import { IncidentPanel } from "@/components/IncidentPanel"
 import { PerformancePage } from "@/pages/PerformancePage"
 import { ScenariosPage } from "@/pages/ScenariosPage"
+import { DevicesPage } from "@/pages/DevicesPage"
+import { IncidentsPage } from "@/pages/IncidentsPage"
+import { SettingsPage } from "@/pages/SettingsPage"
 import { useFireWatch } from "@/hooks/useFireWatch"
 
 export default function App() {
@@ -36,20 +39,15 @@ export default function App() {
 
         {page === "ops" && (
           <div className="flex flex-1 overflow-hidden">
-            {/* Panneau gauche – palette */}
             <div className="w-44 shrink-0 border-r border-border overflow-y-auto bg-card/30">
               <DevicePalette />
             </div>
-
-            {/* Carte 3D */}
             <FireMap
               state={state}
               world={world}
               alertLevel={alertLevel}
               sendCommand={sendCommand}
             />
-
-            {/* Panneau droit – incident */}
             <IncidentPanel
               incident={state.incident}
               alertLevel={alertLevel}
@@ -58,12 +56,24 @@ export default function App() {
           </div>
         )}
 
+        {page === "devices" && (
+          <DevicesPage nodes={state.nodes} sendCommand={sendCommand} />
+        )}
+
         {page === "perf" && (
           <PerformancePage metrics={metrics} />
         )}
 
         {page === "scenarios" && (
           <ScenariosPage sendCommand={sendCommand} />
+        )}
+
+        {page === "incidents" && (
+          <IncidentsPage />
+        )}
+
+        {page === "settings" && (
+          <SettingsPage />
         )}
       </div>
 

@@ -79,6 +79,11 @@ export interface ThreatenedPlace {
   lon: number
 }
 
+export interface TimelineEvent {
+  type: AlertLevel
+  at: number
+}
+
 export interface Incident {
   id: string
   status: "actif" | "maîtrisé"
@@ -98,6 +103,35 @@ export interface Incident {
   suspects: string[]
   alertsSent?: string[]
   reason?: string
+  timeline?: TimelineEvent[]
+}
+
+export interface DetectionThresholds {
+  smokePpm: number
+  coPpm: number
+  tempRisePerMin: number
+  humDropPerMin: number
+  irHot: number
+  tmaxHot: number
+}
+
+export interface FusionWeights {
+  weightFlame: number
+  weightThermal: number
+  weightSmoke: number
+  weightCO: number
+  weightTempRise: number
+  weightHumDrop: number
+  minConfirmScore: number
+  minPreAlertScore: number
+  minSuspicionScore: number
+}
+
+export interface AppSettings {
+  thresholds: DetectionThresholds
+  fusion: FusionWeights
+  alerts: { ntfyEnabled: boolean; pushoverEnabled: boolean }
+  burnZones: unknown[]
 }
 
 export interface Weather {

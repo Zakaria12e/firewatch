@@ -19,6 +19,7 @@ import {
   recordPacket, recordFireStart, recordSuspicion, recordConfirmation,
   recordFireReset, recordFalseAlertAvoided, getMetrics, resetMetrics,
 } from "./metrics.js"
+import { getSettings, updateSettings } from "./settings.js"
 
 // ---------------------------------------------------------------------------
 // État en mémoire
@@ -28,6 +29,8 @@ let incident = null              // incendie en cours
 let sirenOverride = null         // true / false forcé depuis le dashboard, null = auto
 let lastEval = 0
 let lastSuspectAt = 0
+let _prevLevel = "veille"
+let _pendingTimeline = []   // événements de niveau avant confirmation
 
 // Monde simulé (vérité terrain)
 let worldState = null            // dernier snapshot reçu de /api/sim/world
@@ -73,6 +76,17 @@ io.on("connection", async (socket) => socket.emit("state", await publicState()))
 app.get("/api/state", async (_req, res) => res.json(await publicState()))
 app.get("/api/history/:id", async (req, res) => res.json(await history(req.params.id)))
 app.get("/api/incidents", async (_req, res) => res.json(await listIncidents()))
+app.get("/api/incidents/:id", async (req, res) => {
+  const list = await listIncidents()
+  const inc = list.find((i) => i.id === req.params.id)
+  if (!inc) return res.status(404).json({ error: "incident introuvable" })
+  res.json(inc)
+})
+app.get("/api/settings", (_req, res) => res.json(getSettings()))
+app.put("/api/settings", (req, res) => {
+  if (!req.body) return res.status(400).json({ error: "body manquant" })
+  res.json(updateSettings(req.body))
+})
 app.get("/api/metrics", (_req, res) =>
   res.json(getMetrics([...nodes.values()].map(publicNode)))
 )
@@ -128,6 +142,8 @@ app.post("/api/scenario/reset", (_req, res) => {
   sirenOverride = null
   if (incident) closeIncident("réinitialisé")
   recordFireReset()
+  _pendingTimeline = []
+  _prevLevel = "veille"
   res.json({ ok: true })
 })
 
@@ -181,10 +197,16 @@ async function runDetection() {
   // Émettre le niveau d'alerte courant (dashboard)
   io.emit("alert_level", { level: result.level, score: result.score, riskIndex: result.riskIndex })
 
+  // Suivi des transitions de niveau (timeline)
+  if (result.level !== _prevLevel && result.level !== "veille") {
+    _pendingTimeline.push({ type: result.level, at: now })
+  }
+  _prevLevel = result.level
+
   if (result.confirmed) {
     const isNew = !incident || incident.status !== "actif"
     incident = {
-      ...(isNew ? { id: `INC-${now}`, startedAt: now, alertsSent: [] } : incident),
+      ...(isNew ? { id: `INC-${now}`, startedAt: now, alertsSent: [], timeline: [..._pendingTimeline] } : incident),
       ...result,
       position: result.position,
       heading: result.prediction?.heading,
@@ -197,6 +219,7 @@ async function runDetection() {
       updatedAt: now,
     }
     if (isNew) {
+      _pendingTimeline = []
       console.log(`🔥 FEU CONFIRMÉ niveau=${result.level} score=${result.score} suspects=(${result.suspects.join(", ")})`)
       const payload = buildMessage(incident)
       io.emit("alert", { ...payload, incidentId: incident.id })
