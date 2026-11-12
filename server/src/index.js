@@ -9,7 +9,8 @@ import coap from "coap"
 import { decode, encode } from "cbor-x"
 
 import { config, CENTER, PLACES } from "./config.js"
-import { nodeStatus, riskIndex, evaluate } from "./detect.js"
+import { nodeStatus, riskIndex } from "./detect.js"
+import { evaluate } from "./detection/index.js"
 import { distance, inPolygon } from "./geo.js"
 import { initStore, saveMeasurement, history, saveIncident, listIncidents, storeMode } from "./store.js"
 import { notify, buildMessage } from "./alerts.js"
@@ -139,19 +140,34 @@ async function runDetection() {
   if (now - lastEval < 1000) return
   lastEval = now
 
-  const result = evaluate([...nodes.values()], now)
+  const detContext = {
+    worldWeather: worldState?.weather,
+    timeScale: worldState?.timeScale ?? config.timeScale,
+    burnZones: [],   // zones de brûlage déclarées (configurables depuis /api/settings)
+  }
+  const result = evaluate([...nodes.values()], now, detContext)
   if (result.suspects.length) lastSuspectAt = now
+
+  // Émettre le niveau d'alerte courant (dashboard)
+  io.emit("alert_level", { level: result.level, score: result.score, riskIndex: result.riskIndex })
 
   if (result.confirmed) {
     const isNew = !incident || incident.status !== "actif"
     incident = {
       ...(isNew ? { id: `INC-${now}`, startedAt: now, alertsSent: [] } : incident),
       ...result,
+      position: result.position,
+      heading: result.prediction?.heading,
+      rosMPerMin: result.prediction?.rosMPerMin,
+      zones: result.prediction?.zones,
+      threatenedNodes: result.prediction?.threatenedNodes,
+      threatenedPlaces: result.prediction?.threatenedPlaces,
+      areaHa: result.prediction?.areaHa,
       status: "actif",
       updatedAt: now,
     }
     if (isNew) {
-      console.log(`🔥 FEU CONFIRMÉ (${result.suspects.join(", ")}) → alertes`)
+      console.log(`🔥 FEU CONFIRMÉ niveau=${result.level} score=${result.score} suspects=(${result.suspects.join(", ")})`)
       const payload = buildMessage(incident)
       io.emit("alert", { ...payload, incidentId: incident.id })
       notify(payload).then((sent) => {
