@@ -64,6 +64,47 @@ def make_stations(period, world):
     return stations
 
 
+def _http_post(url, body_dict, timeout=2.0):
+    """POST JSON vers url. Retourne le dict de réponse ou None."""
+    body = json.dumps(body_dict).encode()
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def _http_get(url, timeout=2.0):
+    """GET JSON depuis url. Retourne le dict ou None."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def post_command(host, http_port, cmd, timeout=2.0):
+    _http_post("http://{}:{}/api/world/command".format(host, http_port), cmd, timeout)
+
+
+def get_server_state(host, http_port):
+    return _http_get("http://{}:{}/api/state".format(host, http_port))
+
+
+def get_server_metrics(host, http_port):
+    return _http_get("http://{}:{}/api/metrics".format(host, http_port)) or {}
+
+
+def reset_server(host, http_port):
+    _http_post("http://{}:{}/api/scenario/reset".format(host, http_port), {})
+    _http_post("http://{}:{}/api/metrics/reset".format(host, http_port), {})
+
+
 def post_world(host, http_port, world, stations, timeout=2.0):
     """
     Envoie la vérité terrain au serveur (POST /api/sim/world).
@@ -105,6 +146,144 @@ def handle_coap_response(station, resp, world):
         print("🚨 {} : SIRÈNE {}".format(station.id, flag))
 
 
+BENCH_SCENARIOS = [
+    {"name": "chergui",          "desc": "Feu Chergui (vent fort d'est)"},
+    {"name": "au-vent",          "desc": "Feu au vent (fumée s'éloigne)"},
+    {"name": "nuit",             "desc": "Feu de nuit (vent faible)"},
+    {"name": "deux-foyers",      "desc": "Deux foyers simultanés"},
+    {"name": "pluie",            "desc": "Pluie (risque faible, extinction)"},
+]
+
+RUN_DURATION_REAL = 60   # secondes réelles par run (vitesse ×50 → ~12 min sim)
+BENCH_SPEED = 50.0       # facteur d'accélération pendant le banc
+
+
+def run_bench(args):
+    """Banc d'essai : chaque scénario N fois, résultats dans docs/bench-results.json."""
+    import os
+    print("🔬 Banc d'essai FireWatch – {} scénarios × {} runs".format(
+        len(BENCH_SCENARIOS), args.bench))
+    print("   Serveur : http://{}:{}".format(args.host, args.http_port))
+    print("   Accélération : {}×, durée max par run : {} s réelles".format(
+        BENCH_SPEED, RUN_DURATION_REAL))
+    print()
+
+    all_results = []
+
+    for sc in BENCH_SCENARIOS:
+        print("  ▶  Scénario «{}» …".format(sc["name"]))
+        runs = []
+
+        for n in range(args.bench):
+            # Réinitialisation du serveur
+            reset_server(args.host, args.http_port)
+            time.sleep(1.5)
+
+            # Nouveau monde accéléré
+            world = World(speed=BENCH_SPEED)
+            stations = make_stations(args.period, world)
+            coap_client = CoapClient(args.host, args.port)
+
+            # Lancer le scénario
+            post_command(args.host, args.http_port,
+                         {"type": "scenario", "name": sc["name"]})
+
+            t0 = time.time()
+            detected = False
+            det_time_s = None
+            last_world_post = 0.0
+
+            while time.time() - t0 < RUN_DURATION_REAL:
+                world.tick()
+                now = time.time()
+
+                for st in stations:
+                    if not st.ready(now):
+                        continue
+                    rssi, snr = -80.0, 5.0
+                    sf = st.sf_from_snr(snr)
+                    if random.random() < st.packet_loss(snr):
+                        st.schedule_next(now)
+                        st.consume_battery(sf)
+                        continue
+                    readings = st.read_sensors(world)
+                    pack = st.build_senml(readings, rssi, snr, sf)
+                    payload = cbor2.dumps(pack)
+                    resp = coap_client.post("fw/up", payload)
+                    st.consume_battery(sf)
+                    st.schedule_next(now)
+                    if resp:
+                        handle_coap_response(st, resp, world)
+
+                if now - last_world_post >= 0.5:
+                    post_world(args.host, args.http_port, world, stations)
+                    last_world_post = now
+
+                srv = get_server_state(args.host, args.http_port)
+                if srv and srv.get("incident") and srv["incident"].get("status") == "actif":
+                    det_time_s = round(time.time() - t0, 1)
+                    detected = True
+                    break
+
+                time.sleep(0.05)
+
+            m = get_server_metrics(args.host, args.http_port)
+            runs.append({
+                "run": n + 1,
+                "detected": detected,
+                "det_time_s": det_time_s,
+                "pdr_pct": m.get("network", {}).get("pdr", None),
+                "cbor_savings_pct": m.get("data", {}).get("savingsPct", 0),
+            })
+            status = "✅ {:.1f} s".format(det_time_s) if detected else "❌ non détecté"
+            print("     run {}/{} : {}".format(n + 1, args.bench, status))
+
+        det_runs = [r for r in runs if r["detected"]]
+        avg_time = (
+            round(sum(r["det_time_s"] for r in det_runs) / len(det_runs), 1)
+            if det_runs else None
+        )
+        result = {
+            "scenario": sc["name"],
+            "description": sc["desc"],
+            "runs": runs,
+            "detection_rate": len(det_runs) / len(runs),
+            "avg_det_time_s": avg_time,
+            "avg_cbor_savings_pct": (
+                round(sum(r["cbor_savings_pct"] for r in runs) / len(runs), 1)
+                if runs else 0
+            ),
+        }
+        all_results.append(result)
+        print("     → taux={:.0%}  temps moyen={}s\n".format(
+            result["detection_rate"],
+            avg_time if avg_time is not None else "N/A",
+        ))
+
+    # Écriture JSON
+    docs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs")
+    os.makedirs(docs_dir, exist_ok=True)
+    json_path = os.path.join(docs_dir, "bench-results.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(all_results, f, indent=2, ensure_ascii=False)
+
+    # Tableau Markdown
+    md_path = os.path.join(docs_dir, "bench-results.md")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("# Résultats du banc d'essai FireWatch\n\n")
+        f.write("| Scénario | Taux détection | Temps moyen (s) | Économie CBOR |\n")
+        f.write("|---|---|---|---|\n")
+        for r in all_results:
+            f.write("| {} | {:.0%} | {} | {}% |\n".format(
+                r["scenario"],
+                r["detection_rate"],
+                r["avg_det_time_s"] if r["avg_det_time_s"] is not None else "N/A",
+                r["avg_cbor_savings_pct"],
+            ))
+
+    print("✅ Résultats écrits dans {} et {}".format(json_path, md_path))
+
+
 def main():
     p = argparse.ArgumentParser(description="FireWatch – simulateur IoT forestier")
     p.add_argument("--host",         default="127.0.0.1")
@@ -115,7 +294,13 @@ def main():
     p.add_argument("--fire-after",   type=float, default=0,     help="feu auto après N s (0=jamais)")
     p.add_argument("--real-weather", action="store_true")
     p.add_argument("--verbose",      action="store_true")
+    p.add_argument("--bench",        type=int,   default=0,
+                   help="banc d'essai : N runs par scénario (serveur doit être en marche)")
     args = p.parse_args()
+
+    if args.bench > 0:
+        run_bench(args)
+        return
 
     print("🌲 FireWatch – démarrage du moteur de simulation")
     print("   Chargement du relief (peut prendre quelques secondes)…")

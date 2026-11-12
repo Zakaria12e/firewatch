@@ -142,3 +142,34 @@ export interface AlertLevelPayload {
   score: number
   riskIndex: { value: number }
 }
+
+export interface DetectionEvent {
+  startMs: number
+  suspicionMs: number | null
+  confirmationMs: number | null
+}
+
+export interface ScenarioBenchResult {
+  scenario: string
+  description: string
+  runs: { run: number; detected: boolean; det_time_s: number | null; cbor_savings_pct: number }[]
+  detection_rate: number
+  avg_det_time_s: number | null
+  avg_cbor_savings_pct: number
+}
+
+export interface Metrics {
+  detection: {
+    events: DetectionEvent[]
+    confirmTimes: number[]
+    suspTimes: number[]
+    avgConfirmS: number | null
+    avgSuspS: number | null
+    count: number
+  }
+  falseAlerts: { avoided: number }
+  network: { packetsReceived: number; pdr: number }
+  data: { cborBytes: number; jsonEstBytes: number; savingsPct: number; avgPacketCbor: number }
+  health: { online: number; total: number }
+  scenarios: ScenarioBenchResult[]
+}

@@ -81,7 +81,8 @@ class FireModel:
         self.grid[r][c] = ('B', BURN_TIME)
         fid = "F{:03d}".format(self._fire_id_counter)
         self._fire_id_counter += 1
-        self.fires[fid] = {"id": fid, "start": time.time(), "cells": [{"r": r, "c": c}]}
+        now = time.time()
+        self.fires[fid] = {"id": fid, "start": now, "startEpochMs": int(now * 1000), "cells": [{"r": r, "c": c}]}
         return True
 
     def extinguish(self, r, c, radius_m):
@@ -248,7 +249,11 @@ class FireModel:
     def fires_snapshot(self):
         """Liste JSON-sérialisable des foyers actifs."""
         return [
-            {"id": f["id"], "start": f["start"],
-             "cells": [{"r": cell["r"], "c": cell["c"]} for cell in f["cells"]]}
+            {
+                "id": f["id"],
+                "start": f["start"],
+                "startEpochMs": f.get("startEpochMs", int(f["start"] * 1000)),
+                "cells": [{"r": cell["r"], "c": cell["c"]} for cell in f["cells"]],
+            }
             for f in self.fires.values()
         ]

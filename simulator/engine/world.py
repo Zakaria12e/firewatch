@@ -33,6 +33,7 @@ class World:
         self._command_queue = []
         self._last_tick = time.time()
         self._device_id_counter = 0
+        self._scheduled_commands = []   # [(sim_time_trigger, cmd)]
 
     # ------------------------------------------------------------------
     # Tick
@@ -45,6 +46,11 @@ class World:
         dt_sim = dt_real * self.speed * self.time_scale
         self.sim_time += dt_sim
         self.fire.tick(dt_sim, self.weather)
+        # Commandes programmées (scénarios avec délai)
+        due = [(t, c) for (t, c) in self._scheduled_commands if self.sim_time >= t]
+        for item in due:
+            self._scheduled_commands.remove(item)
+            self.apply_command(item[1])
 
     # ------------------------------------------------------------------
     # Ordres
@@ -121,14 +127,54 @@ class World:
         }
         return did
 
+    def _ignite_near(self, lat, lon):
+        """Allume la cellule la plus proche de (lat, lon) qui soit combustible."""
+        r0, c0 = latlon_to_cell(lat, lon)
+        for d in range(15):
+            for dr in range(-d, d + 1):
+                for dc in range(-d, d + 1):
+                    if abs(dr) != d and abs(dc) != d:
+                        continue
+                    if self.fire.ignite(r0 + dr, c0 + dc):
+                        return True
+        return False
+
     def _run_scenario(self, name):
-        """Préréglages de scénario de démo."""
+        """Préréglages de scénario de démo (météo + feu + commandes programmées)."""
+        self._scheduled_commands.clear()
         if name == "chergui":
+            # Feu à l'est, vent fort d'est → détection rapide sous le vent
             self.apply_command({"type": "preset", "name": "chergui"})
-        elif name == "pluie":
-            self.apply_command({"type": "preset", "name": "pluie"})
+            self._ignite_near(35.135, -5.175)
+        elif name == "au-vent":
+            # Feu à l'ouest des capteurs, vent d'est → fumée s'éloigne
+            self.apply_command({"type": "preset", "name": "chergui"})
+            self._ignite_near(35.135, -5.258)
         elif name == "nuit":
+            # Feu de nuit, faible vent
             self.apply_command({"type": "preset", "name": "nuit"})
+            self._ignite_near(35.135, -5.215)
+        elif name == "deux-foyers":
+            # Deux foyers simultanés (sautes de feu)
+            self.apply_command({"type": "preset", "name": "chergui"})
+            self._ignite_near(35.147, -5.195)
+            self._ignite_near(35.120, -5.237)
+        elif name == "changement-vent":
+            # Feu à l'est, vent tourne de 90° après 600 s simulées
+            self.apply_command({"type": "preset", "name": "chergui"})
+            self._ignite_near(35.135, -5.175)
+            self._scheduled_commands.append(
+                (self.sim_time + 600, {"type": "wind", "speed": 5.0, "dir": 190.0})
+            )
+        elif name == "pluie":
+            # Feu démarre sous le Chergui, pluie arrive après 400 s simulées
+            self.apply_command({"type": "preset", "name": "chergui"})
+            self._ignite_near(35.135, -5.215)
+            self._scheduled_commands.append(
+                (self.sim_time + 400, {"type": "preset", "name": "pluie"})
+            )
+        elif name == "pluie_seule":
+            self.apply_command({"type": "preset", "name": "pluie"})
         elif name == "reset":
             self.apply_command({"type": "reset"})
 

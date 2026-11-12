@@ -6,6 +6,7 @@ import type {
   Incident,
   WorldState,
   AlertLevelPayload,
+  Metrics,
 } from "@/types"
 
 const DEFAULT_STATE: FireWatchState = {
@@ -27,6 +28,7 @@ export function useFireWatch() {
     score: 0,
     riskIndex: { value: 0 },
   })
+  const [metrics, setMetrics] = useState<Metrics | null>(null)
   const socketRef = useRef<Socket | null>(null)
 
   useEffect(() => {
@@ -61,6 +63,18 @@ export function useFireWatch() {
     }
   }, [])
 
+  // Métriques : polling toutes les 5 s
+  useEffect(() => {
+    const fetchMetrics = () =>
+      fetch("/api/metrics")
+        .then((r) => r.json())
+        .then(setMetrics)
+        .catch(() => {})
+    fetchMetrics()
+    const id = setInterval(fetchMetrics, 5000)
+    return () => clearInterval(id)
+  }, [])
+
   const sendCommand = useCallback(
     async (type: string, payload: Record<string, unknown> = {}) => {
       await fetch("/api/world/command", {
@@ -72,5 +86,5 @@ export function useFireWatch() {
     []
   )
 
-  return { state, world, alertLevel, sendCommand }
+  return { state, world, alertLevel, metrics, sendCommand }
 }

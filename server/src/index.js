@@ -15,6 +15,10 @@ import { distance, inPolygon } from "./geo.js"
 import { initStore, saveMeasurement, history, saveIncident, listIncidents, storeMode } from "./store.js"
 import { notify, buildMessage } from "./alerts.js"
 import { getWeather } from "./weather.js"
+import {
+  recordPacket, recordFireStart, recordSuspicion, recordConfirmation,
+  recordFireReset, recordFalseAlertAvoided, getMetrics, resetMetrics,
+} from "./metrics.js"
 
 // ---------------------------------------------------------------------------
 // État en mémoire
@@ -69,16 +73,36 @@ io.on("connection", async (socket) => socket.emit("state", await publicState()))
 app.get("/api/state", async (_req, res) => res.json(await publicState()))
 app.get("/api/history/:id", async (req, res) => res.json(await history(req.params.id)))
 app.get("/api/incidents", async (_req, res) => res.json(await listIncidents()))
+app.get("/api/metrics", (_req, res) =>
+  res.json(getMetrics([...nodes.values()].map(publicNode)))
+)
+app.post("/api/metrics/reset", (_req, res) => {
+  resetMetrics()
+  res.json({ ok: true })
+})
 
 // ---------------------------------------------------------------------------
 // API monde simulé
 // ---------------------------------------------------------------------------
 app.post("/api/sim/world", (req, res) => {
+  const prev = worldState
   worldState = req.body
   lastWorldAt = Date.now()
+
+  // Tracking métriques : nouveau feu détecté dans la vérité terrain
+  const fires = worldState.fires || []
+  const prevFires = prev?.fires || []
+  if (fires.length > 0 && prevFires.length === 0) {
+    const f = fires[0]
+    recordFireStart(f.startEpochMs ?? Math.round(f.start * 1000))
+  }
+  // Feu terminé (toutes les cellules brûlées)
+  if (fires.length === 0 && prevFires.length > 0) {
+    recordFireReset()
+  }
+
   const cmds = [...worldCommandQueue]
   worldCommandQueue = []
-  // Throttle : émettre world sur Socket.io max 1×/s
   io.emit("world", worldState)
   res.json({ commands: cmds })
 })
@@ -103,6 +127,7 @@ app.post("/api/scenario/reset", (_req, res) => {
   worldCommandQueue.push({ type: "reset" })
   sirenOverride = null
   if (incident) closeIncident("réinitialisé")
+  recordFireReset()
   res.json({ ok: true })
 })
 
@@ -147,6 +172,11 @@ async function runDetection() {
   }
   const result = evaluate([...nodes.values()], now, detContext)
   if (result.suspects.length) lastSuspectAt = now
+
+  // Métriques de détection
+  if (result.level === "suspicion" || result.level === "pré-alerte") recordSuspicion(now)
+  if (result.confirmed) recordConfirmation(now)
+  if (result.falseAlert) recordFalseAlertAvoided()
 
   // Émettre le niveau d'alerte courant (dashboard)
   io.emit("alert_level", { level: result.level, score: result.score, riskIndex: result.riskIndex })
@@ -206,14 +236,16 @@ coapServer.on("request", (req, res) => {
     res.code = "4.04"
     return res.end()
   }
-  let msg
+  let msg, rawPack
   try {
-    msg = parseSenml(decode(req.payload))
+    rawPack = decode(req.payload)
+    msg = parseSenml(rawPack)
     if (!msg.id) throw new Error("bn manquant")
   } catch (e) {
     res.code = "4.00"
     return res.end(`SenML/CBOR invalide : ${e.message}`)
   }
+  recordPacket(req.payload.length, Buffer.byteLength(JSON.stringify(rawPack)))
 
   const v = msg.values
   const readings = {
