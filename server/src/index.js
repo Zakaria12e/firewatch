@@ -20,18 +20,21 @@ import { getWeather } from "./weather.js"
 // ---------------------------------------------------------------------------
 const nodes = new Map()          // id -> nœud
 let incident = null              // incendie en cours
-let pendingScenario = null       // ordre à transmettre au simulateur
 let sirenOverride = null         // true / false forcé depuis le dashboard, null = auto
 let lastEval = 0
 let lastSuspectAt = 0
 
+// Monde simulé (vérité terrain)
+let worldState = null            // dernier snapshot reçu de /api/sim/world
+let worldCommandQueue = []       // ordres en attente pour le moteur
+let lastWorldAt = 0              // timestamp du dernier POST /api/sim/world
+
 const sirenFor = (node) => {
   if (sirenOverride !== null) return sirenOverride
   if (!incident || incident.status !== "actif") return false
-  return (
-    distance(node, incident.position) < 1500 ||
-    inPolygon(node, incident.zones[1].polygon)   // zone atteinte en 30 min
-  )
+  const nearFire = incident.position && distance(node, incident.position) < 1500
+  const inZone30 = incident.zones?.[1]?.polygon && inPolygon(node, incident.zones[1].polygon)
+  return nearFire || inZone30
 }
 
 const publicNode = (n) => ({
@@ -48,6 +51,7 @@ const publicState = async () => ({
   center: CENTER,
   places: PLACES,
   sirenOverride,
+  simulatorConnected: Date.now() - lastWorldAt < 3000,
 })
 
 // ---------------------------------------------------------------------------
@@ -65,14 +69,37 @@ app.get("/api/state", async (_req, res) => res.json(await publicState()))
 app.get("/api/history/:id", async (req, res) => res.json(await history(req.params.id)))
 app.get("/api/incidents", async (_req, res) => res.json(await listIncidents()))
 
+// ---------------------------------------------------------------------------
+// API monde simulé
+// ---------------------------------------------------------------------------
+app.post("/api/sim/world", (req, res) => {
+  worldState = req.body
+  lastWorldAt = Date.now()
+  const cmds = [...worldCommandQueue]
+  worldCommandQueue = []
+  // Throttle : émettre world sur Socket.io max 1×/s
+  io.emit("world", worldState)
+  res.json({ commands: cmds })
+})
+
+app.get("/api/world", (_req, res) => res.json(worldState || {}))
+
+app.post("/api/world/command", (req, res) => {
+  const cmd = req.body
+  if (!cmd || !cmd.type) return res.status(400).json({ error: "type manquant" })
+  worldCommandQueue.push(cmd)
+  res.json({ ok: true, queued: worldCommandQueue.length })
+})
+
+// Raccourcis conservés (compatibilité avec l'ancienne API)
 app.post("/api/scenario/fire", (req, res) => {
   const { lat, lon } = req.body || {}
-  pendingScenario = { type: "fire", ...(lat && lon ? { lat, lon } : {}) }
-  res.json({ ok: true, message: "Ordre envoyé au simulateur au prochain message CoAP" })
+  worldCommandQueue.push({ type: "fire_start", ...(lat && lon ? { lat, lon } : { lat: CENTER.lat, lon: CENTER.lon }) })
+  res.json({ ok: true })
 })
 
 app.post("/api/scenario/reset", (_req, res) => {
-  pendingScenario = { type: "reset" }
+  worldCommandQueue.push({ type: "reset" })
   sirenOverride = null
   if (incident) closeIncident("réinitialisé")
   res.json({ ok: true })
@@ -196,11 +223,8 @@ coapServer.on("request", (req, res) => {
   runDetection()
 
   // Réponse CoAP = ordres pour le nœud (comme une fenêtre de réception LoRaWAN)
+  // Contient uniquement period et siren : les ordres du monde passent par /api/sim/world
   const reply = { period: node.period, siren: sirenFor(node) }
-  if (pendingScenario) {
-    reply.scenario = pendingScenario
-    pendingScenario = null
-  }
   res.code = "2.04"
   res.setOption("Content-Format", "application/cbor")
   res.end(encode(reply))
