@@ -13,11 +13,11 @@ import type { LucideIcon } from "lucide-react"
 // ---------------------------------------------------------------------------
 // Constantes de tuiles
 // ---------------------------------------------------------------------------
-const TERRARIUM = ["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"]
+const TERRARIUM      = ["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"]
 const ESRI_SATELLITE = ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"]
 const EOX_CLOUDLESS  = ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/GoogleMapsCompatible/{z}/{y}/{x}.jpg"]
-const OPENTOPO      = ["https://tile.opentopomap.org/{z}/{x}/{y}.png"]
-const CARTO_DARK    = ["https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"]
+const OPENTOPO       = ["https://tile.opentopomap.org/{z}/{x}/{y}.png"]
+const CARTO_DARK     = ["https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"]
 
 type Basemap = "satellite" | "topo" | "dark"
 
@@ -38,7 +38,7 @@ function buildStyle(basemap: Basemap, esriOk: boolean): object {
     version: 8,
     sources: {
       basemap: baseSource,
-      "terrain-dem": { type: "raster-dem", tiles: TERRARIUM, tileSize: 256, encoding: "terrarium", maxzoom: 14 },
+      "terrain-dem":   { type: "raster-dem", tiles: TERRARIUM, tileSize: 256, encoding: "terrarium", maxzoom: 14 },
       "hillshade-dem": { type: "raster-dem", tiles: TERRARIUM, tileSize: 256, encoding: "terrarium", maxzoom: 14 },
     },
     layers: [
@@ -46,10 +46,17 @@ function buildStyle(basemap: Basemap, esriOk: boolean): object {
       { id: "basemap", type: "raster", source: "basemap",
         paint: { "raster-opacity": basemap === "satellite" ? 1 : basemap === "topo" ? 0.9 : 0.85 } },
       { id: "hillshade", type: "hillshade", source: "hillshade-dem",
-        paint: { "hillshade-exaggeration": 0.35, "hillshade-shadow-color": "#000020", "hillshade-highlight-color": "#ffffff" } },
+        paint: { "hillshade-exaggeration": 0.5, "hillshade-shadow-color": "#000020", "hillshade-highlight-color": "#ffffff" } },
     ],
-    fog: { range: [0.5, 15], color: "#000018", "horizon-blend": 0.08 },
-    sky: { "sky-color": "#000020", "sky-horizon-blend": 0.4, "horizon-color": "#00001a", "horizon-fog-blend": 0.3 },
+    // Brume ambrée horizon (Chergui / forêt sèche du Rif)
+    fog: {
+      "range": [0.5, 12],
+      "color": "#0d0502",
+      "high-color": "#1c0905",
+      "horizon-blend": 0.08,
+      "space-color": "#010203",
+      "star-intensity": 0.05,
+    },
   }
 }
 
@@ -191,15 +198,16 @@ const DEVICE_ICONS: Record<string, { Icon: LucideIcon; color: string; bg: string
 }
 
 const FAULT_OPACITY: Record<string, number> = {
-  ok:             1,
+  ok:              1,
   batterie_faible: 0.8,
-  figé:           0.6,
-  aberrant:       0.9,
-  dérive:         0.75,
-  hors_ligne:     0.35,
-  offline:        0.35,
+  figé:            0.6,
+  aberrant:        0.9,
+  dérive:          0.75,
+  hors_ligne:      0.35,
+  offline:         0.35,
 }
 
+// Marqueur d'appareil avec mât vertical et ombre au sol
 function DeviceMarker({
   device, node, onClick,
 }: {
@@ -216,26 +224,47 @@ function DeviceMarker({
 
   return (
     <div
-      className="relative cursor-pointer select-none"
+      className="relative flex flex-col items-center select-none cursor-pointer"
       style={{ opacity }}
       title={`${device.id} · ${device.kind} · ${fault}${node ? ` · T=${node.readings?.temp?.toFixed(0)}°C smoke=${node.readings?.smoke?.toFixed(0)}ppm bat=${node.readings?.bat?.toFixed(0)}%` : ""}`}
       onClick={onClick}
     >
       {/* Anneau pulsé si sirène active */}
       {isSiren && (
-        <div className="absolute inset-0 rounded-full border-2 border-red-500 animate-ping" style={{ margin: "-4px" }} />
+        <div
+          className="absolute rounded-full border-2 border-red-500 animate-ping"
+          style={{ width: 36, height: 36, top: -6, left: "50%", transform: "translateX(-50%)", zIndex: 10 }}
+        />
       )}
+
       {/* Corps du marqueur */}
       <div
         className="w-6 h-6 rounded-full flex items-center justify-center border border-black/40 shadow-lg"
-        style={{ background: isOnline ? bg : "#374151" }}
+        style={{ background: isOnline ? bg : "#374151", position: "relative", zIndex: 5 }}
       >
         <Icon className="w-3 h-3" style={{ color: isOnline ? color : "#9ca3af" }} />
       </div>
-      {/* Point hors-ligne */}
-      {!isOnline && (
-        <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-zinc-600 border border-black/60" />
-      )}
+
+      {/* Mât vertical */}
+      <div
+        style={{
+          width: 2,
+          height: 36,
+          borderRadius: 1,
+          background: "linear-gradient(to bottom, rgba(255,255,255,0.28), rgba(255,255,255,0.03))",
+        }}
+      />
+
+      {/* Disque d'ombre au sol */}
+      <div
+        style={{
+          width: 14,
+          height: 5,
+          borderRadius: "50%",
+          background: "radial-gradient(ellipse at center, rgba(0,0,0,0.65) 0%, transparent 70%)",
+          marginTop: -1,
+        }}
+      />
     </div>
   )
 }
@@ -251,11 +280,17 @@ interface Props {
 }
 
 export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
-  const mapRef = useRef<MapRef>(null)
+  const mapRef        = useRef<MapRef>(null)
+  const containerRef  = useRef<HTMLDivElement>(null)
+  const is3DRef       = useRef(true)
+  const diagLoggedRef = useRef(false)   // log diagnostic une seule fois
+
   const [basemap, setBasemap] = useState<Basemap>("satellite")
-  const [is3D, setIs3D] = useState(true)
+  const [is3D, setIs3D]       = useState(true)
   const [showTruth, setShowTruth] = useState(true)
-  const [esriOk, setEsriOk] = useState(true)
+  const [esriOk, setEsriOk]   = useState(true)
+  const [mapLoaded, setMapLoaded] = useState(false)
+
   const prevConfirmedRef = useRef(false)
 
   // -------------------------------------------------------------------------
@@ -264,38 +299,63 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
   const mapStyle = useMemo(() => buildStyle(basemap, esriOk), [basemap, esriOk])
 
   // -------------------------------------------------------------------------
-  // Terrain : appliqué à chaque chargement/rechargement de style
+  // Terrain : exagération 2.2 pour relief très visible
   // -------------------------------------------------------------------------
   const applyTerrain = useCallback((map: MapLibreMap, enable: boolean) => {
     try {
-      map.setTerrain(enable ? { source: "terrain-dem", exaggeration: 1.6 } : null)
+      map.setTerrain(enable ? { source: "terrain-dem", exaggeration: 2.2 } : null)
     } catch { /* style pas encore prêt */ }
   }, [])
 
+  // -------------------------------------------------------------------------
+  // Chargement initial + listener style.load persistant
+  // -------------------------------------------------------------------------
   const handleMapLoad = useCallback(() => {
     const map = mapRef.current?.getMap() as MapLibreMap | undefined
     if (!map) return
-    applyTerrain(map, is3D)
-    map.on("style.load", () => applyTerrain(map, is3D))
 
-    // Détection d'erreur Esri → bascule sur EOX
+    setMapLoaded(true)
+    applyTerrain(map, is3DRef.current)
+
+    // Réappliquer le terrain à chaque changement de fond de carte
+    map.on("style.load", () => {
+      applyTerrain(map, is3DRef.current)
+
+      // Diagnostic affiché une seule fois en console
+      if (!diagLoggedRef.current) {
+        diagLoggedRef.current = true
+        console.log("[FireMap 3D] terrain:", JSON.stringify(map.getTerrain()))
+        try {
+          const elev = map.queryTerrainElevation([CENTER_LON, CENTER_LAT])
+          console.log("[FireMap 3D] altitude centre:", elev?.toFixed(0), "m")
+        } catch { /* tuiles pas encore chargées */ }
+      }
+    })
+
+    // Fallback Esri → EOX si erreur 403/CORS
     map.on("error", (e) => {
       if (typeof e?.error?.message === "string" && e.error.message.includes("arcgisonline")) {
         setEsriOk(false)
       }
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [applyTerrain])
 
   // -------------------------------------------------------------------------
-  // 2D / 3D toggle
+  // 2D / 3D toggle — animation 1,2 s, désactive le terrain en 2D
   // -------------------------------------------------------------------------
-  useEffect(() => {
+  const handleToggle3D = useCallback(() => {
     const map = mapRef.current?.getMap() as MapLibreMap | undefined
-    if (!map || !map.isStyleLoaded()) return
-    applyTerrain(map, is3D)
-    map.easeTo({ pitch: is3D ? 62 : 0, duration: 600 })
-  }, [is3D, applyTerrain])
+    if (!map) return
+    const next = !is3DRef.current
+    is3DRef.current = next
+    setIs3D(next)
+    applyTerrain(map, next)
+    map.easeTo(next
+      ? { pitch: 72, bearing: -30, duration: 1200 }
+      : { pitch: 0,  bearing: 0,   duration: 1200 }
+    )
+  }, [applyTerrain])
 
   // -------------------------------------------------------------------------
   // flyTo cinématique à la confirmation du feu
@@ -318,6 +378,41 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
   }, [alertLevel.level, alertLevel.wind, state.incident?.position])
 
   // -------------------------------------------------------------------------
+  // Rotation lente automatique (s'arrête dès interaction)
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (!mapLoaded) return
+    const map = mapRef.current?.getMap() as MapLibreMap | undefined
+    const container = containerRef.current
+    if (!map || !container) return
+
+    let frameId: number
+    let lastInteraction = Date.now()
+
+    // Écouter sur le conteneur DOM (capte aussi les clics sur les marqueurs)
+    const onInteract = () => { lastInteraction = Date.now() }
+    container.addEventListener("mousedown", onInteract, { passive: true })
+    container.addEventListener("touchstart", onInteract, { passive: true })
+    map.on("wheel", onInteract)
+
+    const tick = () => {
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      if (is3DRef.current && Date.now() - lastInteraction > 5000) {
+        map.setBearing((map.getBearing() + 0.015) % 360)
+      }
+      frameId = requestAnimationFrame(tick)
+    }
+    frameId = requestAnimationFrame(tick)
+
+    return () => {
+      cancelAnimationFrame(frameId)
+      container.removeEventListener("mousedown", onInteract)
+      container.removeEventListener("touchstart", onInteract)
+      map.off("wheel", onInteract)
+    }
+  }, [mapLoaded])
+
+  // -------------------------------------------------------------------------
   // GeoJSON (recalculé uniquement si les données changent)
   // -------------------------------------------------------------------------
   const fireGeoJSON   = useMemo(() => fireCellsGeoJSON(world),               [world])
@@ -335,7 +430,7 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
   }, [state.nodes])
 
   // -------------------------------------------------------------------------
-  // Handlers
+  // Handlers drag-and-drop depuis la palette
   // -------------------------------------------------------------------------
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -361,11 +456,11 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
   // -------------------------------------------------------------------------
   const worldDevices = world?.devices ?? []
   const orphanNodes  = state.nodes.filter((n) => !worldDevices.find((d) => d.id === n.id))
-
-  const incident = state.incident
+  const incident     = state.incident
 
   return (
     <div
+      ref={containerRef}
       className="flex-1 relative overflow-hidden"
       onDragOver={(e) => e.preventDefault()}
       onDrop={handleDrop}
@@ -373,7 +468,14 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
       <ReactMap
         ref={mapRef}
         mapStyle={mapStyle as never}
-        initialViewState={{ latitude: CENTER_LAT, longitude: CENTER_LON, zoom: 13, pitch: 62, bearing: -25 }}
+        initialViewState={{
+          latitude:  35.14,
+          longitude: -5.235,
+          zoom:      12.6,
+          pitch:     72,
+          bearing:   -30,
+        }}
+        maxPitch={85}
         style={{ width: "100%", height: "100%" }}
         onLoad={handleMapLoad}
         onDblClick={handleDblClick}
@@ -449,13 +551,13 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
             paint={{ "line-color": "#ef4444", "line-opacity": 0.5, "line-width": 1.5, "line-dasharray": [3, 2] }} />
         </Source>
 
-        {/* ── Marqueurs : appareils du simulateur (draggables) ── */}
+        {/* ── Marqueurs : appareils du simulateur (mât + ombre) ── */}
         {worldDevices.map((device) => (
           <Marker
             key={device.id}
             latitude={device.lat}
             longitude={device.lon}
-            anchor="center"
+            anchor="top"
             draggable
             onDragEnd={(e) => sendCommand("device_move", { id: device.id, lat: e.lngLat.lat, lon: e.lngLat.lng })}
           >
@@ -516,8 +618,8 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
         <div className="w-px h-4 bg-zinc-700 mx-0.5" />
 
         <button
-          onClick={() => setIs3D(!is3D)}
-          title={is3D ? "Basculer en vue 2D" : "Basculer en vue 3D"}
+          onClick={handleToggle3D}
+          title={is3D ? "Basculer en vue 2D" : "Basculer en vue 3D avec terrain"}
           className={`px-2 py-0.5 text-[10px] rounded transition-colors font-mono flex items-center gap-1 ${
             is3D ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/40" : "text-zinc-400 hover:text-zinc-200"
           }`}
@@ -578,7 +680,7 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
         ))}
       </div>
 
-      {/* Layers icon en bas à droite (indicateur visuel) */}
+      {/* Indicateur bas de carte */}
       <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-[10px] text-muted-foreground/50 select-none pointer-events-none flex items-center gap-1">
         <Layers className="w-3 h-3" />
         Glisser un appareil · Double-clic = feu
