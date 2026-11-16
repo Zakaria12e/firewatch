@@ -1,6 +1,6 @@
-import { useState } from "react"
+import { Fragment, useState } from "react"
 import { Wrench } from "lucide-react"
-import type { FireNode, DeviceKind, NodeFault, FaultMode } from "@/types"
+import type { FireNode, DeviceKind, NodeFault, NodeReadings, FaultMode } from "@/types"
 
 const KIND_LABEL: Record<DeviceKind, string> = {
   station: "Station", temp: "Temp", smoke: "Fumée", co: "CO",
@@ -18,6 +18,17 @@ const FAULT_COLOR: Record<NodeFault, string> = {
 }
 
 const FAULT_MODES: FaultMode[] = ["ok", "offline", "battery", "stuck", "drift", "spike", "noisy"]
+
+function inferKind(r: NodeReadings): DeviceKind {
+  if (r.tmax != null) return "thermal"
+  if (r.wind_speed != null && r.smoke == null && r.temp == null) return "wind"
+  if (r.flame != null && r.smoke == null && r.temp == null) return "flame"
+  if (r.co != null && r.smoke == null && r.temp == null) return "co"
+  if (r.smoke != null && r.temp == null) return "smoke"
+  if (r.fmc != null) return "fuel"
+  if (r.rain != null) return "rain"
+  return "station"
+}
 const FAULT_LABEL: Record<FaultMode, string> = {
   ok: "OK", offline: "Hors ligne", battery: "Batterie", stuck: "Figé",
   drift: "Dérive", spike: "Aberrant", noisy: "Bruyant",
@@ -136,9 +147,8 @@ export function DevicesPage({ nodes, sendCommand }: Props) {
             </thead>
             <tbody>
               {filtered.map((node) => (
-                <>
+                <Fragment key={node.id}>
                   <tr
-                    key={node.id}
                     onClick={() => setSelected(selected === node.id ? null : node.id)}
                     className={`border-t border-border/40 cursor-pointer transition-colors ${
                       selected === node.id ? "bg-orange-500/10" : "hover:bg-white/3"
@@ -146,7 +156,7 @@ export function DevicesPage({ nodes, sendCommand }: Props) {
                   >
                     <td className="px-3 py-2 font-mono text-xs">{node.id}</td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">
-                      {KIND_LABEL[node.readings && "temp" in node.readings ? "station" : "station"] ?? "—"}
+                      {KIND_LABEL[inferKind(node.readings)]}
                     </td>
                     <td className={`px-3 py-2 text-xs font-medium ${FAULT_COLOR[node.status]}`}>
                       {node.status}
@@ -165,7 +175,7 @@ export function DevicesPage({ nodes, sendCommand }: Props) {
                     </td>
                   </tr>
                   {selected === node.id && (
-                    <tr key={`${node.id}-detail`} className="bg-black/20">
+                    <tr className="bg-black/20">
                       <td colSpan={7} className="p-0">
                         <DeviceDetail
                           node={node}
@@ -175,7 +185,7 @@ export function DevicesPage({ nodes, sendCommand }: Props) {
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               ))}
             </tbody>
           </table>
