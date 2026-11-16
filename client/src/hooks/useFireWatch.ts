@@ -13,6 +13,7 @@ const DEFAULT_STATE: FireWatchState = {
   nodes: [],
   incident: null,
   weather: null,
+  weatherMode: "reel",
   store: "memory",
   center: { lat: 35.135, lon: -5.215 },
   places: [],

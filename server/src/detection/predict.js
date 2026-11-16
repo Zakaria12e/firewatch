@@ -14,8 +14,11 @@ export const HORIZONS = [15, 30, 60]   // minutes réelles
  * Inclut la pente si disponible (pente en degrés, positif = montée).
  */
 export function rateOfSpread(wind_speed, hum, fmc = 20, slope_deg = 0) {
-  const dryness = Math.max(0.3, (60 - hum) / 40) * Math.max(0.3, (40 - fmc) / 40)
-  const slopeFactor = Math.exp(0.07 * Math.max(0, slope_deg))   // pente accélère le feu
+  // humFactor → 0 à hum ≥ 85 % (feu impossible par humidité élevée)
+  const humFactor = Math.min(1, Math.max(0, (85 - hum) / 55))
+  const fmcFactor = Math.min(1, Math.max(0.1, (35 - fmc) / 25))
+  const dryness = humFactor * fmcFactor
+  const slopeFactor = Math.exp(0.07 * Math.max(0, slope_deg))
   return Math.round((2 + 3 * wind_speed) * dryness * slopeFactor)
 }
 

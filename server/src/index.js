@@ -14,7 +14,7 @@ import { evaluate } from "./detection/index.js"
 import { distance, inPolygon } from "./geo.js"
 import { initStore, saveMeasurement, history, saveIncident, listIncidents, storeMode } from "./store.js"
 import { notify, buildMessage } from "./alerts.js"
-import { getWeather } from "./weather.js"
+import { getWeather, getWeatherMode, setWeatherMode, setManualWeather, applyPreset } from "./weather.js"
 import {
   recordPacket, recordFireStart, recordSuspicion, recordConfirmation,
   recordFireReset, recordFalseAlertAvoided, getMetrics, resetMetrics,
@@ -51,16 +51,24 @@ const publicNode = (n) => ({
   siren: sirenFor(n),
 })
 
-const publicState = async () => ({
-  nodes: [...nodes.values()].map(publicNode),
-  incident,
-  weather: await getWeather(),
-  store: storeMode(),
-  center: CENTER,
-  places: PLACES,
-  sirenOverride,
-  simulatorConnected: Date.now() - lastWorldAt < 3000,
-})
+const publicState = async () => {
+  const simConnected = Date.now() - lastWorldAt < 3000
+  // Source de vérité météo : simulateur > manuel > Open-Meteo
+  const weather = (simConnected && worldState?.weather)
+    ? { ...worldState.weather, mode: getWeatherMode() }
+    : await getWeather()
+  return {
+    nodes: [...nodes.values()].map(publicNode),
+    incident,
+    weather,
+    weatherMode: getWeatherMode(),
+    store: storeMode(),
+    center: CENTER,
+    places: PLACES,
+    sirenOverride,
+    simulatorConnected: simConnected,
+  }
+}
 
 // ---------------------------------------------------------------------------
 // HTTP + Socket.io
@@ -93,6 +101,25 @@ app.get("/api/metrics", (_req, res) =>
 app.post("/api/metrics/reset", (_req, res) => {
   resetMetrics()
   res.json({ ok: true })
+})
+
+// ---------------------------------------------------------------------------
+// API mode météo
+// ---------------------------------------------------------------------------
+app.get("/api/weather/mode", (_req, res) => res.json({ mode: getWeatherMode() }))
+
+app.put("/api/weather/mode", (req, res) => {
+  const { mode, preset, weather } = req.body || {}
+  if (mode) setWeatherMode(mode)
+  if (preset) {
+    applyPreset(preset)
+    worldCommandQueue.push({ type: "preset", name: preset })
+  }
+  if (weather) {
+    setManualWeather(weather)
+    worldCommandQueue.push({ type: "weather", ...weather })
+  }
+  res.json({ ok: true, mode: getWeatherMode() })
 })
 
 // ---------------------------------------------------------------------------
@@ -194,8 +221,13 @@ async function runDetection() {
   if (result.confirmed) recordConfirmation(now)
   if (result.falseAlert) recordFalseAlertAvoided()
 
-  // Émettre le niveau d'alerte courant (dashboard)
-  io.emit("alert_level", { level: result.level, score: result.score, riskIndex: result.riskIndex })
+  // Émettre le niveau d'alerte courant + vent mesuré par les capteurs (dashboard)
+  io.emit("alert_level", {
+    level: result.level,
+    score: result.score,
+    riskIndex: result.riskIndex,
+    wind: result.wind,
+  })
 
   // Suivi des transitions de niveau (timeline)
   if (result.level !== _prevLevel && result.level !== "veille") {

@@ -36,6 +36,8 @@ export type FaultMode =
   | "spike"
   | "noisy"
 
+export type WeatherMode = "reel" | "manuel" | "prevision"
+
 export interface NodeReadings {
   temp?: number
   hum?: number
@@ -50,6 +52,8 @@ export interface NodeReadings {
   fmc?: number
   rain?: number
   gust?: number
+  rssi?: number
+  snr?: number
 }
 
 export interface FireNode {
@@ -93,7 +97,7 @@ export interface Incident {
   startedAt: number
   updatedAt?: number
   endedAt?: number
-  position?: { lat: number; lon: number }
+  position?: { lat: number; lon: number; uncertainty_m?: number }
   heading?: number
   rosMPerMin?: number
   zones?: Zone[]
@@ -140,6 +144,7 @@ export interface Weather {
   wind_speed: number
   wind_dir: number
   fmc?: number
+  mode?: WeatherMode
 }
 
 export interface WorldDevice {
@@ -152,7 +157,7 @@ export interface WorldDevice {
 }
 
 export interface WorldState {
-  grid?: { cells: string; rows: number; cols: number; cell: number }
+  grid?: { cells: string; rows: number; cols: number; cell: number; origin?: { lat: number; lon: number } }
   fires?: { id: string; start: number; cells: [number, number][] }[]
   weather?: Weather
   devices?: WorldDevice[]
@@ -164,6 +169,7 @@ export interface FireWatchState {
   nodes: FireNode[]
   incident: Incident | null
   weather: Weather | null
+  weatherMode: WeatherMode
   store: string
   center: { lat: number; lon: number }
   places: { name: string; lat: number; lon: number }[]
@@ -175,6 +181,7 @@ export interface AlertLevelPayload {
   level: AlertLevel
   score: number
   riskIndex: { value: number }
+  wind?: { speed: number; from: number }
 }
 
 export interface DetectionEvent {

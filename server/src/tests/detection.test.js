@@ -280,9 +280,14 @@ describe("rateOfSpread", () => {
     expect(ros).toBeGreaterThanOrEqual(15)
   })
 
-  it("pluie (vent 2 m/s, hum 85 %, fmc 60 %) → ROS < 5 m/min", () => {
+  it("pluie (vent 2 m/s, hum 85 %, fmc 60 %) → ROS = 0 (humFactor nul à 85 %)", () => {
     const ros = rateOfSpread(2, 85, 60)
-    expect(ros).toBeLessThan(5)
+    expect(ros).toBe(0)
+  })
+
+  it("humidité 100 % → ROS = 0 (feu impossible)", () => {
+    const ros = rateOfSpread(10, 100, 10)
+    expect(ros).toBe(0)
   })
 
   it("pente montante accélère la propagation", () => {
@@ -375,14 +380,26 @@ describe("evaluate – cas d'intégration", () => {
     }
   })
 
-  it("brouillard : fumée + hum > 85 % sans CO → fausse alerte", () => {
+  it("brouillard : fumée + hum > 85 % sans CO → fausse alerte, NON inclus dans suspects", () => {
     const fogNode = makeNode("N01", {
-      readings: { temp: 20, hum: 92, smoke: 400, co: 3, flame: false, wind_speed: 1, wind_dir: 270, bat: 90 },
+      readings: { temp: 11, hum: 100, smoke: 400, co: 3, flame: false, wind_speed: 1, wind_dir: 270, bat: 90 },
     })
     const result = evaluate([fogNode], NOW)
-    if (result.falseAlert) {
-      expect(result.falseAlert.kind).toBe("brouillard")
-    }
+    expect(result.falseAlert).not.toBeNull()
+    expect(result.falseAlert?.kind).toBe("brouillard")
+    expect(result.suspects).not.toContain("N01")
+    expect(result.confirmed).toBe(false)
+  })
+
+  it("brouillard + vrai feu : nœuds brouillard exclus, feu confirmé via autres capteurs", () => {
+    const fogNode = makeNode("FOG01", {
+      readings: { temp: 11, hum: 100, smoke: 450, co: 2, flame: false, wind_speed: 1, wind_dir: 270, bat: 90 },
+    })
+    const feuNode = fireNode("FEU01", 35.135, -5.215)
+    const result = evaluate([fogNode, feuNode], NOW)
+    expect(result.suspects).toContain("FEU01")
+    expect(result.suspects).not.toContain("FOG01")
+    expect(result.confirmed).toBe(true)
   })
 
   it("brûlage : foyer dans zone déclarée → brûlage_autorisé", () => {

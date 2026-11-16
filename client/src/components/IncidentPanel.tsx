@@ -1,4 +1,4 @@
-import { Flame, MapPin, Navigation, Clock, TriangleAlert, CheckCircle } from "lucide-react"
+import { Flame, MapPin, Navigation, Clock, TriangleAlert, CheckCircle, Eye } from "lucide-react"
 import type { Incident, AlertLevelPayload } from "@/types"
 
 const LEVEL_LABEL: Record<string, string> = {
@@ -28,6 +28,18 @@ const LEVEL_TEXT: Record<string, string> = {
   maîtrisé:      "text-green-500",
 }
 
+const LEVEL_BG: Record<string, string> = {
+  veille:        "",
+  vigilance:     "bg-yellow-500/5",
+  suspicion:     "bg-orange-500/5",
+  "pré-alerte":  "bg-orange-600/5",
+  feu_confirmé:  "bg-red-500/10",
+  maîtrisé:      "bg-green-500/5",
+}
+
+// Niveaux pour lesquels on affiche les détails opérationnels complets
+const DETAIL_LEVELS = new Set(["pré-alerte", "feu_confirmé", "maîtrisé"])
+
 function formatEta(etaMin: number): string {
   if (etaMin < 60) return `${etaMin} min`
   return `${Math.round(etaMin / 60)} h ${etaMin % 60} min`
@@ -47,13 +59,15 @@ interface Props {
 
 export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
   const level = alertLevel.level
+  const showDetails = DETAIL_LEVELS.has(level)
 
+  // Veille sans incident : affichage minimal
   if (!incident && level === "veille") {
     return (
       <div className="w-64 border-l border-border flex flex-col items-center justify-center gap-3 text-muted-foreground p-4">
         <CheckCircle className="w-8 h-8 opacity-30" />
         <div className="text-sm text-center">Surveillance en cours</div>
-        <div className="text-xs opacity-40 text-center">Aucune anomalie</div>
+        <div className="text-xs opacity-40 text-center">Aucune anomalie détectée</div>
         <button
           onClick={() => sendCommand("fire_start", { lat: 35.135, lon: -5.215 })}
           className="mt-4 px-3 py-1.5 text-xs bg-orange-600/20 border border-orange-500/30 text-orange-400 rounded hover:bg-orange-600/30 transition-colors"
@@ -65,13 +79,15 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
   }
 
   return (
-    <div className={`w-64 border-l ${LEVEL_BORDER[level] ?? "border-border"} flex flex-col overflow-hidden`}>
+    <div className={`w-64 border-l ${LEVEL_BORDER[level] ?? "border-border"} ${LEVEL_BG[level] ?? ""} flex flex-col overflow-hidden`}>
       {/* En-tête niveau */}
       <div className="p-3 border-b border-border">
-        <div className={`flex items-center gap-2 font-mono font-bold ${LEVEL_TEXT[level] ?? "text-foreground"}`}>
+        <div className={`flex items-center gap-2 font-mono font-bold ${LEVEL_TEXT[level] ?? "text-foreground"} ${level === "feu_confirmé" ? "animate-pulse" : ""}`}>
           <Flame className="w-4 h-4 shrink-0" />
           <span className="text-sm">{LEVEL_LABEL[level] ?? level}</span>
         </div>
+
+        {/* Score de confiance */}
         {alertLevel.score > 0 && (
           <div className="mt-2">
             <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
@@ -80,23 +96,63 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
             </div>
             <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
               <div
-                className="h-full bg-orange-500 rounded-full transition-all duration-500"
+                className={`h-full rounded-full transition-all duration-500 ${
+                  alertLevel.score >= 75 ? "bg-red-500" : alertLevel.score >= 50 ? "bg-orange-500" : "bg-yellow-500"
+                }`}
                 style={{ width: `${alertLevel.score}%` }}
               />
             </div>
           </div>
         )}
+
+        {/* Indice de risque météo */}
+        <div className="flex items-center gap-1 mt-1.5 text-[10px] text-muted-foreground">
+          <Eye className="w-3 h-3" />
+          <span>Risque météo : </span>
+          <span className={`font-mono font-bold ${
+            alertLevel.riskIndex.value >= 75 ? "text-red-400" :
+            alertLevel.riskIndex.value >= 50 ? "text-orange-400" : "text-muted-foreground"
+          }`}>{alertLevel.riskIndex.value}%</span>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-3 text-xs">
-        {incident && (
+
+        {/* Vigilance / Suspicion : indicateurs actifs seulement */}
+        {!showDetails && level !== "veille" && (
+          <div className={`text-sm font-medium ${LEVEL_TEXT[level]}`}>
+            {level === "vigilance"
+              ? "Conditions météo défavorables — surveillance renforcée."
+              : "Anomalie détectée — en cours d'évaluation."}
+          </div>
+        )}
+
+        {/* Suspects à suspicion+ (badges même sans incident confirmé) */}
+        {level === "suspicion" && incident?.suspects && incident.suspects.length > 0 && (
+          <div>
+            <div className="text-muted-foreground mb-1">Capteurs suspects</div>
+            <div className="flex flex-wrap gap-1">
+              {incident.suspects.map((id) => (
+                <span key={id} className="px-1.5 py-0.5 bg-orange-500/10 border border-orange-500/20 text-orange-400 rounded font-mono">
+                  {id}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Détails complets uniquement à pré-alerte+ */}
+        {showDetails && incident && (
           <>
-            {/* Position */}
+            {/* Position + incertitude */}
             {incident.position && (
               <div>
                 <div className="flex items-center gap-1 text-muted-foreground mb-1">
                   <MapPin className="w-3 h-3" />
                   <span>Position estimée</span>
+                  {incident.position.uncertainty_m && (
+                    <span className="ml-auto font-mono text-zinc-500">±{incident.position.uncertainty_m}m</span>
+                  )}
                 </div>
                 <div className="font-mono text-foreground pl-4">
                   {incident.position.lat.toFixed(4)}, {incident.position.lon.toFixed(4)}
@@ -105,7 +161,7 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
             )}
 
             {/* Propagation */}
-            {(incident.heading !== undefined || incident.rosMPerMin) && (
+            {(incident.heading !== undefined || incident.rosMPerMin !== undefined) && (
               <div>
                 <div className="flex items-center gap-1 text-muted-foreground mb-1">
                   <Navigation className="w-3 h-3" />
@@ -115,10 +171,10 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
                   {incident.heading !== undefined && (
                     <span>Direction : {headingLabel(incident.heading)} ({incident.heading.toFixed(0)}°)</span>
                   )}
-                  {incident.rosMPerMin && (
+                  {incident.rosMPerMin !== undefined && (
                     <span>Vitesse : {incident.rosMPerMin} m/min</span>
                   )}
-                  {incident.areaHa && (
+                  {incident.areaHa !== undefined && (
                     <span>Surface : {incident.areaHa} ha</span>
                   )}
                 </div>
@@ -135,24 +191,19 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
                 {incident.threatenedPlaces.map((p) => (
                   <div key={p.name} className="pl-4 flex justify-between text-foreground">
                     <span>{p.name}</span>
-                    <span className="font-mono text-orange-400 ml-2">
-                      {formatEta(p.eta)}
-                    </span>
+                    <span className="font-mono text-orange-400 ml-2">{formatEta(p.eta)}</span>
                   </div>
                 ))}
               </div>
             )}
 
-            {/* Nœuds suspects */}
+            {/* Capteurs déclencheurs */}
             {incident.suspects && incident.suspects.length > 0 && (
               <div>
                 <div className="text-muted-foreground mb-1">Capteurs déclencheurs</div>
-                <div className="pl-4 flex flex-wrap gap-1">
+                <div className="flex flex-wrap gap-1">
                   {incident.suspects.map((id) => (
-                    <span
-                      key={id}
-                      className="px-1.5 py-0.5 bg-orange-500/10 border border-orange-500/20 text-orange-400 rounded font-mono"
-                    >
+                    <span key={id} className="px-1.5 py-0.5 bg-orange-500/10 border border-orange-500/20 text-orange-400 rounded font-mono">
                       {id}
                     </span>
                   ))}
@@ -160,7 +211,7 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
               </div>
             )}
 
-            {/* Horodatage */}
+            {/* Durée */}
             <div className="flex items-center gap-1 text-muted-foreground">
               <Clock className="w-3 h-3" />
               <span>
@@ -171,17 +222,10 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
             </div>
           </>
         )}
-
-        {/* Niveau vigilance sans incident */}
-        {!incident && level !== "veille" && (
-          <div className={`text-sm ${LEVEL_TEXT[level]}`}>
-            {LEVEL_LABEL[level]}
-          </div>
-        )}
       </div>
 
       {/* Actions */}
-      {incident?.status === "actif" && (
+      {incident?.status === "actif" && showDetails && (
         <div className="p-3 border-t border-border flex flex-col gap-2">
           <button
             onClick={() => sendCommand("reset")}

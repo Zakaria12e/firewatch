@@ -105,16 +105,33 @@ export function evaluate(allNodes, now = Date.now(), context = {}) {
 
   // ----------------------------------------------------------------
   // Étape 4 : suspects (au moins un indicateur)
+  // Pré-filtrer les nœuds brouillard : MQ-2 trompé par humidité > 85 %
+  // Ces capteurs sont exclus de la fusion (§6.5)
   // ----------------------------------------------------------------
-  const suspects = withIndicators.filter((n) => n.indicators.any)
+  const rawSuspects = withIndicators.filter((n) => n.indicators.any)
+
+  const fogExcluded = rawSuspects.filter((n) => {
+    const hum = n.readings?.hum ?? 50
+    return n.indicators.smoke && hum > 85 && !n.indicators.co && !n.indicators.flame
+  })
+  if (fogExcluded.length) {
+    fogExcluded.forEach((n) =>
+      events.push({ type: "fausse_alerte", nodeId: n.id, kind: "brouillard" })
+    )
+  }
+
+  const suspects = rawSuspects.filter((n) => !fogExcluded.includes(n))
 
   if (!suspects.length) {
+    const falseAlert = fogExcluded.length
+      ? { kind: "brouillard", label: "Fausse fumée – humidité > 85 % (brouillard/condensation)" }
+      : null
     return {
       level: alertLevel(0, [], avgRisk),
       score: 0,
       confirmed: false,
       suspects: [],
-      falseAlert: null,
+      falseAlert,
       position: null,
       prediction: null,
       wind,

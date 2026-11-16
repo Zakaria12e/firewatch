@@ -40,7 +40,24 @@ export default function App() {
         {page === "ops" && (
           <div className="flex flex-1 overflow-hidden">
             <div className="w-44 shrink-0 border-r border-border overflow-y-auto bg-card/30">
-              <DevicePalette />
+              <DevicePalette
+                weatherMode={state.weatherMode}
+                onWeatherModeChange={(mode) => {
+                  fetch("/api/weather/mode", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ mode }),
+                  })
+                }}
+                onWeatherPreset={(preset) => {
+                  fetch("/api/weather/mode", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ mode: "manuel", preset }),
+                  })
+                  sendCommand("preset", { name: preset })
+                }}
+              />
             </div>
             <FireMap
               state={state}
