@@ -19,21 +19,39 @@ interface Props {
 
 export function Sidebar({ page, onNavigate }: Props) {
   return (
-    <aside className="w-14 shrink-0 bg-black/60 border-r border-border flex flex-col items-center py-2 gap-1">
-      {NAV.map(({ id, Icon, label }) => (
-        <button
-          key={id}
-          onClick={() => onNavigate(id)}
-          title={label}
-          className={`w-10 h-10 flex items-center justify-center rounded transition-colors ${
-            page === id
-              ? "bg-orange-500/20 text-orange-400"
-              : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-          }`}
-        >
-          <Icon className="w-5 h-5" />
-        </button>
-      ))}
+    <aside
+      className="glass anim-left fixed left-3 top-1/2 -translate-y-1/2 z-40 rounded-[22px] flex flex-col items-center py-2 px-1.5 gap-0.5"
+    >
+      {NAV.map(({ id, Icon, label }, i) => {
+        const active = page === id
+        return (
+          <button
+            key={id}
+            onClick={() => onNavigate(id)}
+            title={label}
+            className={`relative w-11 h-11 flex flex-col items-center justify-center gap-0.5 rounded-[16px] spring-hover anim-left anim-d${Math.min(i + 1, 6) as 1|2|3|4|5|6}`}
+            style={{
+              background: active ? "rgba(255,255,255,0.10)" : "transparent",
+            }}
+          >
+            <Icon
+              className="w-[18px] h-[18px]"
+              style={{
+                color: active ? "#ffffff" : "rgba(235,235,245,0.38)",
+                transition: "color 0.2s ease",
+              }}
+            />
+            <span
+              className="w-1 h-1 rounded-full"
+              style={{
+                background: active ? "#ff9f0a" : "transparent",
+                boxShadow: active ? "0 0 6px #ff9f0a80" : "none",
+                transition: "background 0.2s ease, box-shadow 0.2s ease",
+              }}
+            />
+          </button>
+        )
+      })}
     </aside>
   )
 }

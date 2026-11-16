@@ -6,29 +6,29 @@ const LEVEL_LABEL: Record<string, string> = {
   vigilance:     "Vigilance",
   suspicion:     "Suspicion",
   "pré-alerte":  "Pré-alerte",
-  feu_confirmé:  "FEU CONFIRMÉ",
+  feu_confirmé:  "Feu confirmé",
   maîtrisé:      "Maîtrisé",
 }
 
-const LEVEL_CLASS: Record<string, string> = {
-  veille:        "text-muted-foreground",
-  vigilance:     "text-yellow-400",
-  suspicion:     "text-orange-400",
-  "pré-alerte":  "text-orange-500",
-  feu_confirmé:  "text-red-500 font-bold animate-pulse",
-  maîtrisé:      "text-green-500",
+const LEVEL_COLOR: Record<string, string> = {
+  veille:        "rgba(235,235,245,0.38)",
+  vigilance:     "#ffd60a",
+  suspicion:     "#ff9f0a",
+  "pré-alerte":  "#ff6b00",
+  feu_confirmé:  "#ff3b30",
+  maîtrisé:      "#30d158",
 }
 
 const MODE_LABEL: Record<string, string> = {
   reel:      "Réel",
   manuel:    "Manuel",
-  prevision: "Prévision",
+  prevision: "Prévis.",
 }
 
-const MODE_CLASS: Record<string, string> = {
-  reel:      "text-green-400",
-  manuel:    "text-yellow-400",
-  prevision: "text-cyan-400",
+const MODE_COLOR: Record<string, string> = {
+  reel:      "#30d158",
+  manuel:    "#ffd60a",
+  prevision: "#64d2ff",
 }
 
 interface Props {
@@ -39,97 +39,127 @@ interface Props {
 }
 
 export function TopBar({ state, alertLevel, sirenOn, onToggleSiren }: Props) {
-  const online = state.nodes.filter((n) => n.online).length
-  const total  = state.nodes.length
-
-  // Vent : priorité au vent mesuré par les capteurs (vent de détection)
+  const online  = state.nodes.filter((n) => n.online).length
+  const total   = state.nodes.length
+  const level   = alertLevel.level
+  const mode    = state.weatherMode ?? "reel"
   const detWind = alertLevel.wind
   const weather = state.weather
   const windSpeed = detWind?.speed ?? weather?.wind_speed
-  const windFrom  = detWind?.from  ?? weather?.wind_dir
-  const mode = state.weatherMode ?? "reel"
+  const levelColor = LEVEL_COLOR[level] ?? "#ffffff"
+  const isAlert = level === "feu_confirmé"
 
   return (
-    <div className="fixed top-0 left-0 right-0 z-50 h-12 bg-black/90 border-b border-border flex items-center px-4 gap-5 backdrop-blur">
-      {/* Logo */}
-      <span className="text-orange-500 font-bold tracking-widest text-sm uppercase select-none">
-        FireWatch
-      </span>
-
-      {/* Connexion simulateur */}
-      <div className="flex items-center gap-1 text-xs" title="État de la connexion avec le simulateur Python">
-        {state.simulatorConnected ? (
-          <Wifi className="w-3 h-3 text-green-500" />
-        ) : (
-          <WifiOff className="w-3 h-3 text-zinc-500" />
-        )}
-        <span className={state.simulatorConnected ? "text-green-500" : "text-zinc-500"}>
-          {state.simulatorConnected ? "Sim connecté" : "Sim hors ligne"}
-        </span>
-      </div>
-
-      {/* Appareils */}
-      <div className="text-xs text-muted-foreground font-mono" title="Appareils en ligne / total">
-        {online}/{total} appareils
-      </div>
-
-      {/* Niveau d'alerte */}
+    /* Conteneur plein-écran pointer-events-none pour centrer */
+    <div className="fixed top-3 inset-x-0 z-50 flex justify-center pointer-events-none">
       <div
-        className={`flex items-center gap-1 text-sm font-mono ${LEVEL_CLASS[alertLevel.level] ?? "text-foreground"}`}
-        title={`Niveau d'alerte – score ${alertLevel.score}%`}
+        className="glass anim-down pointer-events-auto h-11 flex items-center px-4"
+        style={{
+          borderRadius: 22,
+          width: "min(780px, calc(100vw - 24px))",
+          gap: 0,
+        }}
       >
-        <Flame className="w-4 h-4 shrink-0" />
-        {LEVEL_LABEL[alertLevel.level] ?? alertLevel.level}
-        {alertLevel.score > 0 && (
-          <span className="ml-1 opacity-60 text-xs">({alertLevel.score}%)</span>
-        )}
-      </div>
-
-      <div className="ml-auto flex items-center gap-5">
-        {/* Météo : temp + humidité depuis state.weather, vent depuis capteurs */}
-        {(weather || detWind) && (
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-mono">
-            {weather && (
-              <span>
-                {weather.temp?.toFixed(0)}°C&nbsp;·&nbsp;{weather.hum?.toFixed(0)}%HR
-              </span>
-            )}
-            {(windSpeed !== undefined || windFrom !== undefined) && (
-              <>
-                <span className="opacity-30">·</span>
-                <Wind className="w-3 h-3" />
-                <span
-                  title="Vent mesuré par les capteurs (source de vérité pour la détection)"
-                  className={detWind ? "text-cyan-400" : ""}
-                >
-                  {windSpeed?.toFixed(1) ?? "—"}m/s&nbsp;@&nbsp;{windFrom?.toFixed(0) ?? "—"}°
-                </span>
-              </>
-            )}
-            {/* Mode météo actif */}
-            <span
-              className={`ml-1 px-1 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${MODE_CLASS[mode]} border-current/30`}
-              title={`Mode météo : ${MODE_LABEL[mode]}`}
-            >
-              {MODE_LABEL[mode]}
+        {/* ── Colonne gauche ── */}
+        <div className="flex-1 flex items-center gap-3 min-w-0">
+          {/* Sim */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {state.simulatorConnected
+              ? <Wifi  className="w-3 h-3" style={{ color: "#30d158" }} />
+              : <WifiOff className="w-3 h-3" style={{ color: "rgba(235,235,245,0.25)" }} />}
+            <span className="text-[11px] tabular"
+              style={{ color: state.simulatorConnected ? "#30d158" : "rgba(235,235,245,0.25)" }}>
+              {state.simulatorConnected ? "Sim" : "Offline"}
             </span>
           </div>
-        )}
 
-        {/* Bouton sirène */}
-        <button
-          onClick={onToggleSiren}
-          className={`p-1 rounded transition-colors ${
-            sirenOn ? "text-red-500 hover:text-red-400" : "text-muted-foreground hover:text-foreground"
-          }`}
-          title={sirenOn ? "Sirène forcée ON – cliquer pour désactiver" : "Sirène auto (inactif)"}
-        >
-          {sirenOn ? (
-            <Bell className="w-4 h-4 animate-pulse" />
-          ) : (
-            <BellOff className="w-4 h-4" />
+          <div className="w-px h-3.5 shrink-0" style={{ background: "rgba(255,255,255,0.10)" }} />
+
+          {/* Appareils */}
+          <span className="text-[11px] tabular shrink-0" style={{ color: "rgba(235,235,245,0.45)" }}>
+            {online}
+            <span style={{ color: "rgba(235,235,245,0.22)" }}>/{total}</span>
+          </span>
+
+          <div className="w-px h-3.5 shrink-0" style={{ background: "rgba(255,255,255,0.10)" }} />
+
+          {/* Niveau d'alerte */}
+          <div className="flex items-center gap-1.5 min-w-0 shrink-0">
+            <Flame className={`w-3.5 h-3.5 shrink-0 ${isAlert ? "animate-pulse" : ""}`} style={{ color: levelColor }} />
+            <span
+              className={`text-[11px] font-semibold tabular truncate ${isAlert ? "animate-pulse" : ""}`}
+              style={{ color: levelColor, letterSpacing: "-0.3px" }}
+            >
+              {LEVEL_LABEL[level] ?? level}
+            </span>
+            {alertLevel.score > 0 && (
+              <span className="text-[10px] tabular shrink-0" style={{ color: "rgba(235,235,245,0.30)" }}>
+                {alertLevel.score}%
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* ── Centre : Logo ── */}
+        <div className="shrink-0 px-5 flex items-center justify-center">
+          <span
+            className="text-[13px] font-bold uppercase select-none tracking-tight"
+            style={{ color: "#ff9f0a", letterSpacing: "-0.3px" }}
+          >
+            FireWatch
+          </span>
+        </div>
+
+        {/* ── Colonne droite ── */}
+        <div className="flex-1 flex items-center justify-end gap-2.5">
+          {/* Météo */}
+          {(weather || detWind) && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              {weather && (
+                <span className="text-[11px] tabular" style={{ color: "rgba(235,235,245,0.45)" }}>
+                  {weather.temp?.toFixed(0)}°
+                  <span className="mx-0.5 opacity-30">·</span>
+                  {weather.hum?.toFixed(0)}%
+                </span>
+              )}
+              {windSpeed !== undefined && (
+                <div className="flex items-center gap-1">
+                  <Wind className="w-3 h-3" style={{ color: "rgba(235,235,245,0.3)" }} />
+                  <span className="text-[11px] tabular" style={{ color: detWind ? "#64d2ff" : "rgba(235,235,245,0.45)" }}>
+                    {windSpeed.toFixed(1)} m/s
+                  </span>
+                </div>
+              )}
+              {/* Badge mode */}
+              <span
+                className="px-1.5 py-0.5 text-[8px] font-bold uppercase rounded-full"
+                style={{
+                  color: MODE_COLOR[mode] ?? "#fff",
+                  background: `${MODE_COLOR[mode] ?? "#fff"}16`,
+                  border: `1px solid ${MODE_COLOR[mode] ?? "#fff"}28`,
+                  letterSpacing: "0.07em",
+                }}
+              >
+                {MODE_LABEL[mode]}
+              </span>
+            </div>
           )}
-        </button>
+
+          {/* Sirène */}
+          <button
+            onClick={onToggleSiren}
+            className="w-7 h-7 flex items-center justify-center rounded-full spring-hover shrink-0"
+            style={{
+              background: sirenOn ? "rgba(255,59,48,0.18)" : "rgba(255,255,255,0.06)",
+              border: `1px solid ${sirenOn ? "rgba(255,59,48,0.35)" : "rgba(255,255,255,0.08)"}`,
+            }}
+            title={sirenOn ? "Sirène ON" : "Sirène auto"}
+          >
+            {sirenOn
+              ? <Bell    className="w-3.5 h-3.5 animate-pulse" style={{ color: "#ff3b30" }} />
+              : <BellOff className="w-3.5 h-3.5" style={{ color: "rgba(235,235,245,0.35)" }} />}
+          </button>
+        </div>
       </div>
     </div>
   )

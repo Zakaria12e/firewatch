@@ -8,189 +8,223 @@ interface Props {
   metrics: Metrics | null
 }
 
-function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
+function StatCard({ label, value, sub, color = "#ff9f0a", delay = 0 }: {
+  label: string
+  value: string | number
+  sub?: string
+  color?: string
+  delay?: number
+}) {
   return (
-    <div className="bg-card/50 border border-border rounded-lg p-4 flex flex-col gap-1">
-      <div className="text-xs text-muted-foreground uppercase tracking-wider">{label}</div>
-      <div className="text-2xl font-mono font-bold text-foreground">{value}</div>
-      {sub && <div className="text-xs text-muted-foreground">{sub}</div>}
+    <div
+      className={`anim-up anim-d${delay as 1|2|3|4}`}
+      style={{
+        background: "rgba(255,255,255,0.04)",
+        border: "1px solid rgba(255,255,255,0.07)",
+        borderRadius: 14,
+        padding: "12px 14px",
+      }}
+    >
+      <div className="text-[9px] uppercase tracking-wider font-medium mb-1.5" style={{ color: "rgba(235,235,245,0.35)", letterSpacing: "0.08em" }}>
+        {label}
+      </div>
+      <div className="text-[22px] font-semibold tabular leading-none" style={{ color, letterSpacing: "-0.5px" }}>{value}</div>
+      {sub && <div className="text-[10px] mt-1" style={{ color: "rgba(235,235,245,0.35)" }}>{sub}</div>}
     </div>
   )
+}
+
+function SectionCard({ title, children, delay = 0 }: { title: string; children: React.ReactNode; delay?: number }) {
+  return (
+    <div className={`anim-up anim-d${delay as 1|2|3|4}`}
+      style={{
+        background: "rgba(255,255,255,0.03)",
+        border: "1px solid rgba(255,255,255,0.07)",
+        borderRadius: 14,
+        padding: "14px 16px",
+      }}
+    >
+      <div className="text-[9px] uppercase tracking-wider font-medium mb-3" style={{ color: "rgba(235,235,245,0.3)", letterSpacing: "0.08em" }}>
+        {title}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+const CHART_TOOLTIP_STYLE = {
+  contentStyle: { background: "#1c1c1e", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, fontSize: 11 },
+  labelStyle: { color: "rgba(235,235,245,0.7)" },
+  itemStyle: { color: "#ff9f0a" },
 }
 
 export function PerformancePage({ metrics }: Props) {
   if (!metrics) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
+      <div className="flex-1 flex items-center justify-center text-[12px]" style={{ color: "rgba(235,235,245,0.35)" }}>
         Chargement des métriques…
       </div>
     )
   }
 
   const { detection, falseAlerts, network, data, health, scenarios } = metrics
-
-  const detTimes = detection.confirmTimes.map((t, i) => ({ name: `F${i + 1}`, s: t }))
+  const detTimes  = detection.confirmTimes.map((t, i) => ({ name: `F${i + 1}`, s: t }))
   const suspTimes = detection.suspTimes.map((t, i) => ({ name: `F${i + 1}`, s: t }))
-
-  const cborData = [{ name: "Économie", value: data.savingsPct, fill: "#f97316" }]
+  const cborData  = [{ name: "Économie", value: data.savingsPct, fill: "#ff9f0a" }]
 
   return (
-    <div className="flex-1 overflow-y-auto p-6 space-y-8">
-      <h2 className="text-lg font-semibold text-orange-400 uppercase tracking-widest">
-        Performance
-      </h2>
-
-      {/* Cartes résumé */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <StatCard
-          label="Temps de confirmation"
-          value={detection.avgConfirmS != null ? `${detection.avgConfirmS} s` : "—"}
-          sub={`${detection.count} incendie(s) traité(s)`}
-        />
-        <StatCard
-          label="Temps jusqu'à suspicion"
-          value={detection.avgSuspS != null ? `${detection.avgSuspS} s` : "—"}
-          sub="depuis le début réel du feu"
-        />
-        <StatCard
-          label="Fausses alertes évitées"
-          value={falseAlerts.avoided}
-        />
-        <StatCard
-          label="Paquets reçus"
-          value={network.packetsReceived.toLocaleString()}
-          sub={`PDR estimé : ${network.pdr} %`}
-        />
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* En-tête */}
+      <div className="shrink-0 px-5 pt-4 pb-3 anim-down" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+        <div className="text-[13px] font-semibold text-white/90" style={{ letterSpacing: "-0.374px" }}>Performance</div>
       </div>
 
-      {/* CBOR vs JSON */}
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <div className="bg-card/50 border border-border rounded-lg p-4">
-          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">
-            Économie CBOR vs JSON
-          </div>
-          <div className="flex items-center gap-6">
-            <ResponsiveContainer width={120} height={120}>
-              <RadialBarChart
-                cx="50%"
-                cy="50%"
-                innerRadius="70%"
-                outerRadius="100%"
-                startAngle={90}
-                endAngle={-270}
-                data={cborData}
-              >
-                <PolarAngleAxis type="number" domain={[0, 100]} tick={false} />
-                <RadialBar dataKey="value" cornerRadius={6} />
-              </RadialBarChart>
-            </ResponsiveContainer>
-            <div>
-              <div className="text-3xl font-mono font-bold text-orange-400">
-                {data.savingsPct} %
+      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        {/* Métriques résumé */}
+        <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+          <StatCard delay={1}
+            label="Confirmation"
+            value={detection.avgConfirmS != null ? `${detection.avgConfirmS} s` : "—"}
+            sub={`${detection.count} incendie(s)`}
+            color="#ff9f0a"
+          />
+          <StatCard delay={2}
+            label="Suspicion"
+            value={detection.avgSuspS != null ? `${detection.avgSuspS} s` : "—"}
+            sub="depuis le feu réel"
+            color="#ffd60a"
+          />
+          <StatCard delay={3}
+            label="Fausses alertes évitées"
+            value={falseAlerts.avoided}
+            color="#30d158"
+          />
+          <StatCard delay={4}
+            label="Paquets reçus"
+            value={network.packetsReceived.toLocaleString()}
+            sub={`PDR : ${network.pdr} %`}
+            color="#0a84ff"
+          />
+        </div>
+
+        {/* CBOR + Réseau */}
+        <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+          <SectionCard title="Économie CBOR vs JSON" delay={2}>
+            <div className="flex items-center gap-5">
+              <div style={{ width: 100, height: 100, flexShrink: 0 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <RadialBarChart cx="50%" cy="50%" innerRadius="68%" outerRadius="100%"
+                    startAngle={90} endAngle={-270} data={cborData}>
+                    <PolarAngleAxis type="number" domain={[0, 100]} tick={false} />
+                    <RadialBar dataKey="value" cornerRadius={5} />
+                  </RadialBarChart>
+                </ResponsiveContainer>
               </div>
-              <div className="text-xs text-muted-foreground mt-1">
-                CBOR moyen&nbsp;: {data.avgPacketCbor} o
-              </div>
-              <div className="text-xs text-muted-foreground">
-                JSON estimé&nbsp;: {data.jsonEstBytes > 0
-                  ? Math.round(data.jsonEstBytes / Math.max(1, network.packetsReceived)) + " o/paquet"
-                  : "—"}
+              <div>
+                <div className="text-[28px] font-bold tabular leading-none" style={{ color: "#ff9f0a", letterSpacing: "-0.5px" }}>
+                  {data.savingsPct}%
+                </div>
+                <div className="text-[10px] mt-1.5 space-y-0.5">
+                  <div style={{ color: "rgba(235,235,245,0.4)" }}>CBOR moy. : <span className="text-white/60 tabular">{data.avgPacketCbor} o</span></div>
+                  <div style={{ color: "rgba(235,235,245,0.4)" }}>
+                    JSON/paquet : <span className="text-white/60 tabular">
+                      {network.packetsReceived > 0 ? Math.round(data.jsonEstBytes / network.packetsReceived) + " o" : "—"}
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
+          </SectionCard>
 
-        <div className="bg-card/50 border border-border rounded-lg p-4">
-          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">
-            Santé du réseau de capteurs
-          </div>
-          <div className="flex items-end gap-2 mt-2">
-            <div className="text-3xl font-mono font-bold text-green-400">{health.online}</div>
-            <div className="text-muted-foreground mb-1">/ {health.total} en ligne</div>
-          </div>
-          <div className="mt-3 h-2 rounded-full bg-zinc-800">
-            <div
-              className="h-2 rounded-full bg-green-500 transition-all"
-              style={{ width: health.total > 0 ? `${(health.online / health.total) * 100}%` : "0%" }}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Graphiques des temps de détection */}
-      {detTimes.length > 0 && (
-        <div className="bg-card/50 border border-border rounded-lg p-4">
-          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-4">
-            Temps de détection par incendie (secondes)
-          </div>
-          <ResponsiveContainer width="100%" height={160}>
-            <BarChart data={detTimes} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-              <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#71717a" }} />
-              <YAxis tick={{ fontSize: 11, fill: "#71717a" }} />
-              <Tooltip
-                contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 6 }}
-                labelStyle={{ color: "#f4f4f5" }}
-                itemStyle={{ color: "#f97316" }}
-                formatter={(v) => [`${v} s`, "Confirmation"]}
+          <SectionCard title="Santé réseau" delay={3}>
+            <div className="flex items-end gap-2 mb-3">
+              <div className="text-[28px] font-bold tabular leading-none" style={{ color: "#30d158", letterSpacing: "-0.5px" }}>
+                {health.online}
+              </div>
+              <div className="text-[11px] pb-1" style={{ color: "rgba(235,235,245,0.35)" }}>/ {health.total} appareils</div>
+            </div>
+            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.08)" }}>
+              <div
+                className="h-full rounded-full"
+                style={{
+                  width: health.total > 0 ? `${(health.online / health.total) * 100}%` : "0%",
+                  background: "#30d158",
+                  transition: "width 0.6s cubic-bezier(0.34,1.56,0.64,1)",
+                }}
               />
-              <Bar dataKey="s" fill="#f97316" radius={[3, 3, 0, 0]} name="Confirmation" />
-            </BarChart>
-          </ResponsiveContainer>
-          {suspTimes.length > 0 && (
-            <ResponsiveContainer width="100%" height={160}>
-              <BarChart data={suspTimes} margin={{ top: 8, right: 0, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#71717a" }} />
-                <YAxis tick={{ fontSize: 11, fill: "#71717a" }} />
-                <Tooltip
-                  contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 6 }}
-                  formatter={(v) => [`${v} s`, "Suspicion"]}
-                />
-                <Bar dataKey="s" fill="#eab308" radius={[3, 3, 0, 0]} name="Suspicion" />
+            </div>
+            <div className="mt-2 text-[10px]" style={{ color: "rgba(235,235,245,0.3)" }}>
+              PDR estimé : <span className="tabular text-white/50">{network.pdr} %</span>
+            </div>
+          </SectionCard>
+        </div>
+
+        {/* Graphiques détection */}
+        {detTimes.length > 0 && (
+          <SectionCard title="Temps de détection (secondes)" delay={3}>
+            <ResponsiveContainer width="100%" height={130}>
+              <BarChart data={detTimes} margin={{ top: 0, right: 0, left: -24, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                <XAxis dataKey="name" tick={{ fontSize: 10, fill: "rgba(235,235,245,0.3)" }} />
+                <YAxis tick={{ fontSize: 10, fill: "rgba(235,235,245,0.3)" }} />
+                <Tooltip {...CHART_TOOLTIP_STYLE} formatter={(v) => [`${v} s`, "Confirmation"]} />
+                <Bar dataKey="s" fill="#ff9f0a" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
-          )}
-        </div>
-      )}
+            {suspTimes.length > 0 && (
+              <ResponsiveContainer width="100%" height={110}>
+                <BarChart data={suspTimes} margin={{ top: 8, right: 0, left: -24, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                  <XAxis dataKey="name" tick={{ fontSize: 10, fill: "rgba(235,235,245,0.3)" }} />
+                  <YAxis tick={{ fontSize: 10, fill: "rgba(235,235,245,0.3)" }} />
+                  <Tooltip {...CHART_TOOLTIP_STYLE} formatter={(v) => [`${v} s`, "Suspicion"]} />
+                  <Bar dataKey="s" fill="#ffd60a" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </SectionCard>
+        )}
 
-      {/* Résultats banc d'essai */}
-      {scenarios.length > 0 && (
-        <div className="bg-card/50 border border-border rounded-lg p-4">
-          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">
-            Banc d'essai
-          </div>
-          <table className="w-full text-sm font-mono">
-            <thead>
-              <tr className="text-muted-foreground text-xs border-b border-border">
-                <th className="text-left pb-2">Scénario</th>
-                <th className="text-right pb-2">Taux détection</th>
-                <th className="text-right pb-2">Temps moyen</th>
-                <th className="text-right pb-2">Économie CBOR</th>
-              </tr>
-            </thead>
-            <tbody>
-              {scenarios.map((s) => (
-                <tr key={s.scenario} className="border-b border-border/40">
-                  <td className="py-1.5">{s.scenario}</td>
-                  <td className="text-right py-1.5">{Math.round(s.detection_rate * 100)} %</td>
-                  <td className="text-right py-1.5">
-                    {s.avg_det_time_s != null ? `${s.avg_det_time_s} s` : "—"}
-                  </td>
-                  <td className="text-right py-1.5">{s.avg_cbor_savings_pct} %</td>
+        {/* Banc d'essai */}
+        {scenarios.length > 0 && (
+          <SectionCard title="Banc d'essai" delay={4}>
+            <table className="w-full">
+              <thead>
+                <tr>
+                  {["Scénario", "Détection", "Temps moy.", "CBOR"].map((h) => (
+                    <th key={h} className="text-left pb-2 text-[9px] uppercase tracking-wider font-medium"
+                      style={{ color: "rgba(235,235,245,0.3)", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                      {h}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {scenarios.map((s, i) => (
+                  <tr key={s.scenario}
+                    className={`anim-up anim-d${Math.min(i + 1, 4) as 1|2|3|4}`}
+                    style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                    <td className="py-1.5 text-[11px] text-white/60 font-mono">{s.scenario}</td>
+                    <td className="py-1.5 text-[11px] tabular" style={{ color: s.detection_rate >= 0.9 ? "#30d158" : "#ff9f0a" }}>
+                      {Math.round(s.detection_rate * 100)}%
+                    </td>
+                    <td className="py-1.5 text-[11px] tabular text-white/50">
+                      {s.avg_det_time_s != null ? `${s.avg_det_time_s} s` : "—"}
+                    </td>
+                    <td className="py-1.5 text-[11px] tabular text-white/50">{s.avg_cbor_savings_pct}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </SectionCard>
+        )}
 
-      {detection.count === 0 && scenarios.length === 0 && (
-        <div className="text-center text-sm text-muted-foreground py-10">
-          Aucun incident traité pour l'instant.
-          Allumez un feu depuis la page Opérations ou lancez un scénario.
-        </div>
-      )}
+        {detection.count === 0 && scenarios.length === 0 && (
+          <div className="flex items-center justify-center py-12 text-[12px]" style={{ color: "rgba(235,235,245,0.3)" }}>
+            Aucun incident traité — allumez un feu ou lancez un scénario.
+          </div>
+        )}
+      </div>
     </div>
   )
 }

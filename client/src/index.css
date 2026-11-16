@@ -7,7 +7,7 @@
 
 @theme inline {
     --font-heading: var(--font-sans);
-    --font-sans: 'Geist Variable', sans-serif;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Geist Variable', 'Inter', system-ui, sans-serif;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -49,82 +49,165 @@
 }
 
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    --background: #000000;
+    --foreground: #ffffff;
+    --card: #1c1c1e;
+    --card-foreground: #ffffff;
+    --popover: #2c2c2e;
+    --popover-foreground: #ffffff;
+    --primary: #0a84ff;
+    --primary-foreground: #ffffff;
+    --secondary: #2c2c2e;
+    --secondary-foreground: #ffffff;
+    --muted: #2c2c2e;
+    --muted-foreground: rgba(235, 235, 245, 0.55);
+    --accent: #3a3a3c;
+    --accent-foreground: #ffffff;
+    --destructive: #ff453a;
+    --border: rgba(255, 255, 255, 0.08);
+    --input: rgba(255, 255, 255, 0.08);
+    --ring: rgba(255, 255, 255, 0.20);
+    --chart-1: #ff9f0a;
+    --chart-2: #0a84ff;
+    --chart-3: #30d158;
+    --chart-4: #ff453a;
+    --chart-5: #bf5af2;
+    --radius: 0.75rem;
+    --sidebar: #1c1c1e;
+    --sidebar-foreground: #ffffff;
+    --sidebar-primary: #0a84ff;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #3a3a3c;
+    --sidebar-accent-foreground: #ffffff;
+    --sidebar-border: rgba(255, 255, 255, 0.08);
+    --sidebar-ring: rgba(255, 255, 255, 0.20);
+
+    /* FireWatch custom tokens */
+    --fw-fire: #ff5a1f;
+    --fw-critical: #ff3b30;
+    --fw-ember: #6b2510;
+    --fw-blue: #0a84ff;
+    --fw-green: #30d158;
+    --fw-yellow: #ffd60a;
+    --fw-glass: rgba(28, 28, 30, 0.72);
+    --fw-glass-border: rgba(255, 255, 255, 0.08);
 }
 
+/* Alias dark → root (app is always dark) */
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --background: #000000;
+    --foreground: #ffffff;
+    --card: #1c1c1e;
+    --card-foreground: #ffffff;
+    --popover: #2c2c2e;
+    --popover-foreground: #ffffff;
+    --primary: #0a84ff;
+    --primary-foreground: #ffffff;
+    --secondary: #2c2c2e;
+    --secondary-foreground: #ffffff;
+    --muted: #2c2c2e;
+    --muted-foreground: rgba(235, 235, 245, 0.55);
+    --accent: #3a3a3c;
+    --accent-foreground: #ffffff;
+    --destructive: #ff453a;
+    --border: rgba(255, 255, 255, 0.08);
+    --input: rgba(255, 255, 255, 0.08);
+    --ring: rgba(255, 255, 255, 0.20);
+    --chart-1: #ff9f0a;
+    --chart-2: #0a84ff;
+    --chart-3: #30d158;
+    --chart-4: #ff453a;
+    --chart-5: #bf5af2;
 }
+
+/* Glass morphism – panneau flottant type iOS */
+.glass {
+    background: rgba(28, 28, 30, 0.72);
+    backdrop-filter: blur(24px) saturate(160%);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 4px 32px rgba(0, 0, 0, 0.30);
+}
+
+/* Panel plus opaque pour pages avec contenu dense */
+.glass-solid {
+    background: rgba(18, 18, 20, 0.92);
+    backdrop-filter: blur(32px) saturate(140%);
+    -webkit-backdrop-filter: blur(32px) saturate(140%);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    box-shadow: 0 4px 32px rgba(0, 0, 0, 0.40);
+}
+
+/* ── Animations Apple ──────────────────────────────────────────────────── */
+
+@keyframes fw-down {
+  from { opacity: 0; transform: translateY(-10px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)     scale(1);    }
+}
+@keyframes fw-up {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+@keyframes fw-left {
+  from { opacity: 0; transform: translateX(-14px) scale(0.97); }
+  to   { opacity: 1; transform: translateX(0)      scale(1);   }
+}
+@keyframes fw-right {
+  from { opacity: 0; transform: translateX(14px) scale(0.97); }
+  to   { opacity: 1; transform: translateX(0)     scale(1);   }
+}
+@keyframes fw-scale {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1);    }
+}
+@keyframes fw-spring {
+  from { opacity: 0; transform: scale(0.88) translateY(8px); }
+  to   { opacity: 1; transform: scale(1)    translateY(0);   }
+}
+@keyframes fw-pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,90,31,0.0); }
+  50%       { box-shadow: 0 0 0 6px rgba(255,90,31,0.15); }
+}
+
+.anim-down   { animation: fw-down   0.32s cubic-bezier(0.34,1.56,0.64,1) both; }
+.anim-up     { animation: fw-up     0.32s cubic-bezier(0.34,1.56,0.64,1) both; }
+.anim-left   { animation: fw-left   0.36s cubic-bezier(0.34,1.56,0.64,1) both; }
+.anim-right  { animation: fw-right  0.36s cubic-bezier(0.34,1.56,0.64,1) both; }
+.anim-scale  { animation: fw-scale  0.28s cubic-bezier(0.34,1.56,0.64,1) both; }
+.anim-spring { animation: fw-spring 0.22s cubic-bezier(0.34,1.56,0.64,1) both; }
+
+/* Délais en cascade */
+.anim-d1 { animation-delay: 0.04s; }
+.anim-d2 { animation-delay: 0.08s; }
+.anim-d3 { animation-delay: 0.12s; }
+.anim-d4 { animation-delay: 0.16s; }
+.anim-d5 { animation-delay: 0.20s; }
+.anim-d6 { animation-delay: 0.24s; }
+
+/* Hover spring léger */
+.spring-hover {
+  transition: transform 0.22s cubic-bezier(0.34,1.56,0.64,1),
+              background 0.18s ease,
+              box-shadow 0.18s ease;
+}
+.spring-hover:hover  { transform: scale(1.04) translateY(-1px); }
+.spring-hover:active { transform: scale(0.95); }
 
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
+    * {
+        @apply border-border outline-ring/50;
     }
-  body {
-    @apply bg-background text-foreground;
+    body {
+        @apply bg-background text-foreground;
+        font-feature-settings: "ss01", "ss02", "cv01";
     }
-  html {
-    @apply font-sans;
+    html {
+        @apply font-sans;
+    }
+
+    /* Tabular nums for data display */
+    .tabular {
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
     }
 }

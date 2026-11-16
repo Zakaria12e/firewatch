@@ -2,11 +2,12 @@ import { useRef, useCallback, useMemo, useEffect, useState } from "react"
 import ReactMap, { Marker, Source, Layer, NavigationControl, type MapRef } from "react-map-gl/maplibre"
 import type { Map as MapLibreMap, MapLayerMouseEvent } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
-import type { FireWatchState, WorldState, AlertLevelPayload, FireNode, WorldDevice } from "@/types"
+import type { FireWatchState, WorldState, AlertLevelPayload, FireNode, WorldDevice, NodeReadings } from "@/types"
 import type { Feature, FeatureCollection, Polygon } from "geojson"
 import {
   Cpu, Thermometer, CloudFog, TriangleAlert, Flame, Camera,
-  Wind, Leaf, CloudRain, Bell, Radio, Layers, Mountain, Eye, EyeOff,
+  Wind, Leaf, CloudRain, Bell, Radio, Mountain, Eye, EyeOff, X,
+  Battery, Signal,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
@@ -207,13 +208,204 @@ const FAULT_OPACITY: Record<string, number> = {
   offline:         0.35,
 }
 
+// ---------------------------------------------------------------------------
+// Tooltip appareil (style iOS)
+// ---------------------------------------------------------------------------
+const DEVICE_LABELS: Record<string, string> = {
+  station: "Station",   temp: "Température",  smoke: "Fumée",
+  co: "CO",             flame: "Flamme",       thermal: "Thermique",
+  wind: "Vent",         fuel: "Fuel",          rain: "Pluie",
+  siren: "Sirène",      gateway: "Passerelle",
+}
+
+const DEVICE_MODELS: Record<string, string> = {
+  station: "ESP32+LoRa", temp: "DHT22",    smoke: "MQ-2",       co: "MQ-7",
+  flame: "KY-026",       thermal: "MLX90640", wind: "Anémomètre", fuel: "Sonde FMC",
+  rain: "Pluviomètre",   siren: "Sirène+Relais", gateway: "LoRaWAN GW",
+}
+
+type Measurement = { label: string; value: string; unit: string }
+
+function getReadings(kind: string, r: NodeReadings): Measurement[] {
+  const m: Measurement[] = []
+  const add = (label: string, v: number | undefined, unit: string, digits = 1) => {
+    if (v !== undefined) m.push({ label, value: v.toFixed(digits), unit })
+  }
+  switch (kind) {
+    case "station":
+      add("Température", r.temp, "°C", 1); add("Humidité", r.hum, "%", 0)
+      add("Fumée", r.smoke, "ppm", 0); add("CO", r.co, "ppm", 0); break
+    case "temp":
+      add("Température", r.temp, "°C", 1); add("Humidité", r.hum, "%", 0); break
+    case "smoke":
+      add("Fumée", r.smoke, "ppm", 0); add("Humidité", r.hum, "%", 0); break
+    case "co":
+      add("CO", r.co, "ppm", 0); break
+    case "flame":
+      if (r.ir !== undefined) m.push({ label: "IR", value: r.ir.toFixed(2), unit: "" })
+      if (r.flame !== undefined) m.push({ label: "Flamme", value: r.flame ? "Oui" : "Non", unit: "" }); break
+    case "thermal":
+      add("T. max", r.tmax, "°C", 1)
+      if (r.ir !== undefined) m.push({ label: "Cap. chaud", value: r.ir.toFixed(0), unit: "°" }); break
+    case "wind":
+      add("Vitesse", r.wind_speed, "m/s"); add("Direction", r.wind_dir, "°", 0)
+      add("Rafale", r.gust, "m/s"); break
+    case "fuel":
+      add("FMC", r.fmc, "%", 1); break
+    case "rain":
+      add("Pluie", r.rain, "mm/h"); break
+  }
+  return m
+}
+
+const FAULT_LABEL: Record<string, string> = {
+  ok: "En ligne", hors_ligne: "Hors ligne", figé: "Figé",
+  aberrant: "Aberrant", dérive: "Dérive", batterie_faible: "Batterie faible",
+  offline: "Hors ligne",
+}
+
+const FAULT_COLOR: Record<string, string> = {
+  ok: "#30d158", hors_ligne: "#636366", figé: "#0a84ff", aberrant: "#ff3b30",
+  dérive: "#ff9f0a", batterie_faible: "#ffd60a", offline: "#636366",
+}
+
+function DeviceTooltip({
+  device, node, onClose, x, y,
+}: {
+  device: WorldDevice
+  node?: FireNode
+  onClose: () => void
+  x: number
+  y: number
+}) {
+  const cfg = DEVICE_ICONS[device.kind] ?? DEVICE_ICONS.station
+  const { Icon, color } = cfg
+  const fault = node?.status ?? (device.fault !== "ok" ? device.fault : "ok")
+  const faultColor = FAULT_COLOR[fault] ?? "#ffffff"
+  const bat = node?.readings?.bat
+  const rssi = node?.readings?.rssi
+  const snr = node?.readings?.snr
+  const readings = node ? getReadings(device.kind, node.readings) : []
+  const ts = node?.ts ? new Date(node.ts) : null
+  const timeStr = ts ? `${ts.getHours().toString().padStart(2, "0")}:${ts.getMinutes().toString().padStart(2, "0")}:${ts.getSeconds().toString().padStart(2, "0")}` : null
+
+  const W = 232
+  const H = 300
+  const cx = Math.max(12, Math.min(x - W / 2, window.innerWidth - W - 12))
+  const cy = Math.max(72, Math.min(y - H - 16, window.innerHeight - H - 12))
+
+  return (
+    <div
+      className="fixed z-[200] flex flex-col overflow-hidden"
+      style={{
+        left: cx, top: cy, width: W,
+        background: "rgba(28,28,30,0.90)",
+        backdropFilter: "blur(32px) saturate(160%)",
+        WebkitBackdropFilter: "blur(32px) saturate(160%)",
+        border: "1px solid rgba(255,255,255,0.10)",
+        borderRadius: 16,
+        boxShadow: "0 8px 40px rgba(0,0,0,0.50)",
+        animation: "tooltipIn 0.18s cubic-bezier(0.34,1.56,0.64,1) both",
+      }}
+    >
+      {/* En-tête */}
+      <div className="flex items-center gap-3 px-4 pt-3.5 pb-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
+        <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: `${color}20` }}>
+          <Icon className="w-5 h-5" style={{ color }} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[12px] font-semibold text-white/90 leading-none truncate" style={{ letterSpacing: "-0.374px" }}>
+            {DEVICE_LABELS[device.kind] ?? device.kind}
+          </div>
+          <div className="text-[10px] text-white/35 font-mono mt-0.5">{DEVICE_MODELS[device.kind]}</div>
+          <div className="text-[9px] text-white/25 font-mono mt-0.5 truncate">{device.id}</div>
+        </div>
+        <button
+          onClick={onClose}
+          className="w-7 h-7 flex items-center justify-center rounded-full shrink-0 transition-colors"
+          style={{ background: "rgba(255,255,255,0.08)" }}
+        >
+          <X className="w-3.5 h-3.5 text-white/50" />
+        </button>
+      </div>
+
+      <div className="px-4 py-3 flex flex-col gap-2.5">
+        {/* Status + batterie */}
+        <div className="flex items-center justify-between gap-2">
+          <span
+            className="px-2 py-0.5 text-[10px] font-medium rounded-full"
+            style={{ background: `${faultColor}18`, color: faultColor, border: `1px solid ${faultColor}28` }}
+          >
+            {FAULT_LABEL[fault] ?? fault}
+          </span>
+          {bat !== undefined && (
+            <div className="flex items-center gap-1.5">
+              <Battery className="w-3 h-3" style={{ color: bat < 15 ? "#ff3b30" : bat < 40 ? "#ffd60a" : "#30d158" }} />
+              <div className="w-14 h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.10)" }}>
+                <div
+                  className="h-full rounded-full transition-all"
+                  style={{
+                    width: `${bat}%`,
+                    background: bat < 15 ? "#ff3b30" : bat < 40 ? "#ffd60a" : "#30d158",
+                  }}
+                />
+              </div>
+              <span className="text-[9px] tabular" style={{ color: "rgba(235,235,245,0.4)" }}>{bat.toFixed(0)}%</span>
+            </div>
+          )}
+        </div>
+
+        {/* Mesures */}
+        {readings.length > 0 && (
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+            {readings.map((m) => (
+              <div key={m.label}>
+                <div className="text-[9px] text-white/35">{m.label}</div>
+                <div className="text-[12px] font-semibold tabular text-white/85 leading-tight">
+                  {m.value}<span className="text-[9px] text-white/35 font-normal ml-0.5">{m.unit}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* RSSI / SNR */}
+        {(rssi !== undefined || snr !== undefined) && (
+          <div className="flex items-center gap-3 pt-1" style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+            <Signal className="w-3 h-3 text-white/30" />
+            {rssi !== undefined && (
+              <span className="text-[10px] tabular" style={{ color: "rgba(235,235,245,0.4)" }}>
+                RSSI <span className="text-white/60">{rssi.toFixed(0)}</span> dBm
+              </span>
+            )}
+            {snr !== undefined && (
+              <span className="text-[10px] tabular" style={{ color: "rgba(235,235,245,0.4)" }}>
+                SNR <span className="text-white/60">{snr.toFixed(1)}</span> dB
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Dernière mise à jour */}
+        {timeStr && (
+          <div className="text-[9px] tabular" style={{ color: "rgba(235,235,245,0.25)" }}>
+            Dernière mesure : {timeStr}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Marqueur d'appareil avec mât vertical et ombre au sol
+// ---------------------------------------------------------------------------
 function DeviceMarker({
   device, node, onClick,
 }: {
   device: WorldDevice
   node?: FireNode
-  onClick?: () => void
+  onClick?: (e: React.MouseEvent) => void
 }) {
   const cfg = DEVICE_ICONS[device.kind] ?? DEVICE_ICONS.station
   const { Icon, color, bg } = cfg
@@ -290,6 +482,9 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
   const [showTruth, setShowTruth] = useState(true)
   const [esriOk, setEsriOk]   = useState(true)
   const [mapLoaded, setMapLoaded] = useState(false)
+  const [selectedMarker, setSelectedMarker] = useState<{
+    device: WorldDevice; node?: FireNode; x: number; y: number
+  } | null>(null)
 
   const prevConfirmedRef = useRef(false)
 
@@ -461,9 +656,10 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
   return (
     <div
       ref={containerRef}
-      className="flex-1 relative overflow-hidden"
+      className="absolute inset-0 overflow-hidden"
       onDragOver={(e) => e.preventDefault()}
       onDrop={handleDrop}
+      onClick={() => setSelectedMarker(null)}
     >
       <ReactMap
         ref={mapRef}
@@ -552,18 +748,28 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
         </Source>
 
         {/* ── Marqueurs : appareils du simulateur (mât + ombre) ── */}
-        {worldDevices.map((device) => (
-          <Marker
-            key={device.id}
-            latitude={device.lat}
-            longitude={device.lon}
-            anchor="top"
-            draggable
-            onDragEnd={(e) => sendCommand("device_move", { id: device.id, lat: e.lngLat.lat, lon: e.lngLat.lng })}
-          >
-            <DeviceMarker device={device} node={nodeById.get(device.id)} />
-          </Marker>
-        ))}
+        {worldDevices.map((device) => {
+          const node = nodeById.get(device.id)
+          return (
+            <Marker
+              key={device.id}
+              latitude={device.lat}
+              longitude={device.lon}
+              anchor="top"
+              draggable
+              onDragEnd={(e) => sendCommand("device_move", { id: device.id, lat: e.lngLat.lat, lon: e.lngLat.lng })}
+            >
+              <DeviceMarker
+                device={device}
+                node={node}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setSelectedMarker({ device, node, x: e.clientX, y: e.clientY })
+                }}
+              />
+            </Marker>
+          )
+        })}
 
         {/* ── Marqueurs : nœuds CoAP non présents dans world.devices ── */}
         {orphanNodes.map((node) => (
@@ -594,97 +800,130 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
         )}
       </ReactMap>
 
+      {/* Tooltip appareil au clic */}
+      {selectedMarker && (
+        <DeviceTooltip
+          device={selectedMarker.device}
+          node={selectedMarker.node}
+          onClose={() => setSelectedMarker(null)}
+          x={selectedMarker.x}
+          y={selectedMarker.y}
+        />
+      )}
+
       {/* ================================================================
-          Contrôles overlay
+          Contrôles carte – style verre iOS
       ================================================================ */}
 
-      {/* Sélecteur de fond + toggle 2D/3D */}
-      <div className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-black/70 backdrop-blur border border-zinc-700 rounded-lg px-1.5 py-1">
+      {/* Barre centré haut : basemap + 3D + terrain */}
+      <div
+        className="absolute flex items-center gap-0.5 px-1 py-1"
+        style={{
+          top: 68, left: "50%", transform: "translateX(-50%)",
+          background: "rgba(28,28,30,0.72)",
+          backdropFilter: "blur(20px) saturate(140%)",
+          WebkitBackdropFilter: "blur(20px) saturate(140%)",
+          border: "1px solid rgba(255,255,255,0.08)",
+          borderRadius: 12,
+          boxShadow: "0 2px 12px rgba(0,0,0,0.3)",
+        }}
+      >
         {(["satellite", "topo", "dark"] as Basemap[]).map((b) => (
           <button
             key={b}
             onClick={() => setBasemap(b)}
             title={b === "satellite" ? "Satellite Esri" : b === "topo" ? "OpenTopoMap" : "CARTO Sombre"}
-            className={`px-2 py-0.5 text-[10px] rounded transition-colors font-mono ${
-              basemap === b
-                ? "bg-orange-500/30 text-orange-300 border border-orange-500/50"
-                : "text-zinc-400 hover:text-zinc-200"
-            }`}
+            className="px-2.5 py-1 text-[10px] rounded-[8px] transition-all font-medium"
+            style={{
+              background: basemap === b ? "rgba(255,255,255,0.14)" : "transparent",
+              color: basemap === b ? "#ffffff" : "rgba(235,235,245,0.4)",
+            }}
           >
             {b === "satellite" ? "Satellite" : b === "topo" ? "Topo" : "Sombre"}
           </button>
         ))}
 
-        <div className="w-px h-4 bg-zinc-700 mx-0.5" />
+        <div className="w-px h-4 mx-0.5" style={{ background: "rgba(255,255,255,0.10)" }} />
 
         <button
           onClick={handleToggle3D}
-          title={is3D ? "Basculer en vue 2D" : "Basculer en vue 3D avec terrain"}
-          className={`px-2 py-0.5 text-[10px] rounded transition-colors font-mono flex items-center gap-1 ${
-            is3D ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/40" : "text-zinc-400 hover:text-zinc-200"
-          }`}
+          title={is3D ? "Vue 2D" : "Vue 3D terrain"}
+          className="px-2.5 py-1 text-[10px] rounded-[8px] transition-all font-medium flex items-center gap-1"
+          style={{
+            background: is3D ? "rgba(100,210,255,0.15)" : "transparent",
+            color: is3D ? "#64d2ff" : "rgba(235,235,245,0.4)",
+          }}
         >
           <Mountain className="w-3 h-3" />
           {is3D ? "3D" : "2D"}
         </button>
 
-        <div className="w-px h-4 bg-zinc-700 mx-0.5" />
+        <div className="w-px h-4 mx-0.5" style={{ background: "rgba(255,255,255,0.10)" }} />
 
         <button
           onClick={() => setShowTruth(!showTruth)}
           title={showTruth ? "Masquer la vérité terrain" : "Afficher la vérité terrain"}
-          className={`px-2 py-0.5 text-[10px] rounded transition-colors font-mono flex items-center gap-1 ${
-            showTruth ? "bg-orange-500/20 text-orange-400 border border-orange-500/40" : "text-zinc-400 hover:text-zinc-200"
-          }`}
+          className="px-2.5 py-1 text-[10px] rounded-[8px] transition-all font-medium flex items-center gap-1"
+          style={{
+            background: showTruth ? "rgba(255,90,31,0.15)" : "transparent",
+            color: showTruth ? "#ff9f0a" : "rgba(235,235,245,0.4)",
+          }}
         >
           {showTruth ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
           Terrain
         </button>
       </div>
 
-      {/* Légende des états capteurs */}
-      <div className="absolute bottom-8 right-2 bg-black/70 backdrop-blur border border-zinc-700 rounded-lg p-2 text-[9px] text-zinc-400 font-mono flex flex-col gap-0.5">
-        <div className="text-[8px] uppercase tracking-widest text-zinc-500 mb-0.5">États</div>
+      {/* Légende compacte – coin bas droit */}
+      <div
+        className="absolute bottom-6 right-4 flex flex-col gap-1 text-[9px] font-mono px-3 py-2.5"
+        style={{
+          background: "rgba(18,18,20,0.70)",
+          backdropFilter: "blur(16px)",
+          WebkitBackdropFilter: "blur(16px)",
+          border: "1px solid rgba(255,255,255,0.07)",
+          borderRadius: 10,
+        }}
+      >
         {[
-          { color: "#22c55e", label: "OK" },
-          { color: "#eab308", label: "Batterie faible" },
-          { color: "#3b82f6", label: "Figé" },
-          { color: "#ef4444", label: "Aberrant" },
-          { color: "#f97316", label: "Dérive" },
-          { color: "#52525b", label: "Hors ligne" },
+          { color: "#30d158", label: "OK" },
+          { color: "#ffd60a", label: "Batterie" },
+          { color: "#0a84ff", label: "Figé" },
+          { color: "#ff3b30", label: "Aberrant" },
+          { color: "#ff9f0a", label: "Dérive" },
+          { color: "#636366", label: "Hors ligne" },
         ].map(({ color, label }) => (
           <div key={label} className="flex items-center gap-1.5">
-            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
-            <span>{label}</span>
+            <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color }} />
+            <span style={{ color: "rgba(235,235,245,0.4)" }}>{label}</span>
           </div>
         ))}
       </div>
 
-      {/* Couches actives */}
-      <div className="absolute bottom-8 left-2 bg-black/70 backdrop-blur border border-zinc-700 rounded-lg p-2 text-[9px] text-zinc-400 font-mono flex flex-col gap-0.5">
-        <div className="text-[8px] uppercase tracking-widest text-zinc-500 mb-0.5">Couches</div>
-        {[
-          { color: "#10b981", label: "Couverture gateway" },
-          { color: "#06b6d4", label: "Cônes caméras" },
-          { color: "#ef4444", label: "Zone 15 min" },
-          { color: "#f97316", label: "Zone 30 min" },
-          { color: "#fbbf24", label: "Zone 60 min" },
-          { color: "#ef4444", label: "Incertitude foyer", dashed: true },
-        ].map(({ color, label, dashed }) => (
-          <div key={label} className="flex items-center gap-1.5">
-            <div className={`w-3 h-0.5 ${dashed ? "opacity-70" : ""}`} style={{ backgroundColor: color,
-              backgroundImage: dashed ? `repeating-linear-gradient(90deg, ${color} 0, ${color} 2px, transparent 2px, transparent 4px)` : undefined,
-              background: dashed ? undefined : color }} />
-            <span>{label}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* Indicateur bas de carte */}
-      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-[10px] text-muted-foreground/50 select-none pointer-events-none flex items-center gap-1">
-        <Layers className="w-3 h-3" />
+      {/* Hint bas de carte */}
+      <div
+        className="absolute bottom-6 left-1/2 -translate-x-1/2 text-[10px] select-none pointer-events-none px-3 py-1 rounded-full"
+        style={{
+          color: "rgba(235,235,245,0.25)",
+          background: "rgba(0,0,0,0.30)",
+        }}
+      >
         Glisser un appareil · Double-clic = feu
       </div>
     </div>
   )
+}
+
+/* Animation d'entrée du tooltip */
+const _tooltipKeyframe = `
+@keyframes tooltipIn {
+  from { opacity: 0; transform: scale(0.90) translateY(6px); }
+  to   { opacity: 1; transform: scale(1)    translateY(0);   }
+}
+`
+if (typeof document !== "undefined" && !document.getElementById("fw-tooltip-anim")) {
+  const s = document.createElement("style")
+  s.id = "fw-tooltip-anim"
+  s.textContent = _tooltipKeyframe
+  document.head.appendChild(s)
 }
