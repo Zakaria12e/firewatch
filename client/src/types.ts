@@ -160,11 +160,25 @@ export interface FusionWeights {
   minSuspicionScore: number
 }
 
+/** Zone de brûlage agricole déclarée : polygone [[lat, lon], …] */
+export interface BurnZone {
+  id: string
+  name: string
+  polygon: [number, number][]
+  center?: { lat: number; lon: number }
+  radius?: number
+}
+
 export interface AppSettings {
   thresholds: DetectionThresholds
   fusion: FusionWeights
   alerts: { ntfyEnabled: boolean; pushoverEnabled: boolean }
-  burnZones: unknown[]
+  burnZones: BurnZone[]
+}
+
+export interface AlertChannels {
+  ntfy: { configured: boolean; topic: string | null; enabled: boolean }
+  pushover: { configured: boolean; enabled: boolean }
 }
 
 export interface Weather {

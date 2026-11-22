@@ -56,8 +56,9 @@ class Device:
     # Consommation batterie
     # ------------------------------------------------------------------
     def consume_battery(self, sf):
-        # Airtime proportionnel à 2^SF, coût = 0.005 % par message au SF7
-        cost = 0.005 * (2 ** (sf - 7))
+        # Airtime proportionnel à 2^SF : ~0,0004 % de batterie par message au SF7
+        # (≈ 0,013 % au SF12 : 2400 mAh, 40 mA pendant l'émission)
+        cost = 0.0004 * (2 ** (sf - 7))
         self.battery = max(0.0, self.battery - cost)
         if self.fault == "battery":
             self.battery = max(0.0, self.battery - 0.5)

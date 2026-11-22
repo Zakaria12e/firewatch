@@ -8,7 +8,7 @@ interface Props {
   metrics: Metrics | null
 }
 
-function StatCard({ label, value, sub, color = "#ff9f0a", delay = 0 }: {
+function StatCard({ label, value, sub, color = "#FF5A1F", delay = 0 }: {
   label: string
   value: string | number
   sub?: string
@@ -53,9 +53,9 @@ function SectionCard({ title, children, delay = 0 }: { title: string; children: 
 }
 
 const CHART_TOOLTIP_STYLE = {
-  contentStyle: { background: "#1c1c1e", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, fontSize: 11 },
+  contentStyle: { background: "#0d0d0d", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, fontSize: 11 },
   labelStyle: { color: "rgba(235,235,245,0.7)" },
-  itemStyle: { color: "#ff9f0a" },
+  itemStyle: { color: "#FF5A1F" },
 }
 
 export function PerformancePage({ metrics }: Props) {
@@ -70,7 +70,7 @@ export function PerformancePage({ metrics }: Props) {
   const { detection, falseAlerts, network, data, health, scenarios } = metrics
   const detTimes  = detection.confirmTimes.map((t, i) => ({ name: `F${i + 1}`, s: t }))
   const suspTimes = detection.suspTimes.map((t, i) => ({ name: `F${i + 1}`, s: t }))
-  const cborData  = [{ name: "Économie", value: data.savingsPct, fill: "#ff9f0a" }]
+  const cborData  = [{ name: "Économie", value: data.savingsPct, fill: "#FF5A1F" }]
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -79,31 +79,31 @@ export function PerformancePage({ metrics }: Props) {
         <div className="text-[13px] font-semibold text-white/90" style={{ letterSpacing: "-0.374px" }}>Performance</div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+      <div className="flex-1 min-h-0 overflow-y-auto fw-scroll px-5 py-4 space-y-4">
         {/* Métriques résumé */}
         <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
           <StatCard delay={1}
             label="Confirmation"
             value={detection.avgConfirmS != null ? `${detection.avgConfirmS} s` : "—"}
             sub={`${detection.count} incendie(s)`}
-            color="#ff9f0a"
+            color="#FF5A1F"
           />
           <StatCard delay={2}
             label="Suspicion"
             value={detection.avgSuspS != null ? `${detection.avgSuspS} s` : "—"}
             sub="depuis le feu réel"
-            color="#ffd60a"
+            color="#E0260E"
           />
           <StatCard delay={3}
             label="Fausses alertes évitées"
             value={falseAlerts.avoided}
-            color="#30d158"
+            color="#ffffff"
           />
           <StatCard delay={4}
             label="Paquets reçus"
             value={network.packetsReceived.toLocaleString()}
             sub={`PDR : ${network.pdr} %`}
-            color="#0a84ff"
+            color="#ffffff"
           />
         </div>
 
@@ -121,7 +121,7 @@ export function PerformancePage({ metrics }: Props) {
                 </ResponsiveContainer>
               </div>
               <div>
-                <div className="text-[28px] font-bold tabular leading-none" style={{ color: "#ff9f0a", letterSpacing: "-0.5px" }}>
+                <div className="text-[28px] font-bold tabular leading-none" style={{ color: "#FF5A1F", letterSpacing: "-0.5px" }}>
                   {data.savingsPct}%
                 </div>
                 <div className="text-[10px] mt-1.5 space-y-0.5">
@@ -138,7 +138,7 @@ export function PerformancePage({ metrics }: Props) {
 
           <SectionCard title="Santé réseau" delay={3}>
             <div className="flex items-end gap-2 mb-3">
-              <div className="text-[28px] font-bold tabular leading-none" style={{ color: "#30d158", letterSpacing: "-0.5px" }}>
+              <div className="text-[28px] font-bold tabular leading-none" style={{ color: "#ffffff", letterSpacing: "-0.5px" }}>
                 {health.online}
               </div>
               <div className="text-[11px] pb-1" style={{ color: "rgba(235,235,245,0.35)" }}>/ {health.total} appareils</div>
@@ -148,7 +148,7 @@ export function PerformancePage({ metrics }: Props) {
                 className="h-full rounded-full"
                 style={{
                   width: health.total > 0 ? `${(health.online / health.total) * 100}%` : "0%",
-                  background: "#30d158",
+                  background: "#FF5A1F",
                   transition: "width 0.6s cubic-bezier(0.34,1.56,0.64,1)",
                 }}
               />
@@ -168,7 +168,7 @@ export function PerformancePage({ metrics }: Props) {
                 <XAxis dataKey="name" tick={{ fontSize: 10, fill: "rgba(235,235,245,0.3)" }} />
                 <YAxis tick={{ fontSize: 10, fill: "rgba(235,235,245,0.3)" }} />
                 <Tooltip {...CHART_TOOLTIP_STYLE} formatter={(v) => [`${v} s`, "Confirmation"]} />
-                <Bar dataKey="s" fill="#ff9f0a" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="s" fill="#FF5A1F" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
             {suspTimes.length > 0 && (
@@ -178,7 +178,7 @@ export function PerformancePage({ metrics }: Props) {
                   <XAxis dataKey="name" tick={{ fontSize: 10, fill: "rgba(235,235,245,0.3)" }} />
                   <YAxis tick={{ fontSize: 10, fill: "rgba(235,235,245,0.3)" }} />
                   <Tooltip {...CHART_TOOLTIP_STYLE} formatter={(v) => [`${v} s`, "Suspicion"]} />
-                  <Bar dataKey="s" fill="#ffd60a" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="s" fill="#E0260E" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -205,7 +205,7 @@ export function PerformancePage({ metrics }: Props) {
                     className={`anim-up anim-d${Math.min(i + 1, 4) as 1|2|3|4}`}
                     style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
                     <td className="py-1.5 text-[11px] text-white/60 font-mono">{s.scenario}</td>
-                    <td className="py-1.5 text-[11px] tabular" style={{ color: s.detection_rate >= 0.9 ? "#30d158" : "#ff9f0a" }}>
+                    <td className="py-1.5 text-[11px] tabular" style={{ color: s.detection_rate >= 0.9 ? "#ffffff" : "#FF5A1F" }}>
                       {Math.round(s.detection_rate * 100)}%
                     </td>
                     <td className="py-1.5 text-[11px] tabular text-white/50">

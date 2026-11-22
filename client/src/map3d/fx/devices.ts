@@ -74,7 +74,7 @@ uniform float uOpacity;
 varying vec3 vNormal;
 void main() {
   float rim = pow(1.0 - abs(dot(normalize(vNormal), -uView)), 2.5);
-  gl_FragColor = vec4(1.0, 0.353, 0.122, (0.025 + 0.22 * rim) * uOpacity);
+  gl_FragColor = vec4(1.0, 0.353, 0.122, (0.008 + 0.13 * rim) * uOpacity);
 }
 `
 
@@ -292,7 +292,7 @@ export class DeviceSystem implements FxSystem {
     this.clock = f.t
     const s = f.modelScale
     const counts = new Map<DeviceKind, number>()
-    let nHead = 0, nRotor = 0, nVane = 0, nBeacon = 0, nBeam = 0, nLed = 0, nCone = 0, nGlow = 0
+    let nHead = 0, nRotor = 0, nVane = 0, nBeacon = 0, nBeam = 0, nLed = 0, nCone = 0
     const gp = this.glow.pos, ga = this.glow.attr
     const up = new THREE.Vector3(0, 0, 1)
     let gi = 0
@@ -388,7 +388,7 @@ export class DeviceSystem implements FxSystem {
         }
       }
     }
-    nGlow = gi
+    const nGlow = gi
 
     for (const [kind, mesh] of this.bodies) {
       mesh.count = counts.get(kind) ?? 0

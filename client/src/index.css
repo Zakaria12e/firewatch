@@ -51,31 +51,31 @@
 :root {
     --background: #000000;
     --foreground: #ffffff;
-    --card: #1c1c1e;
+    --card: #0d0d0d;
     --card-foreground: #ffffff;
-    --popover: #2c2c2e;
+    --popover: #141414;
     --popover-foreground: #ffffff;
-    --primary: #0a84ff;
+    --primary: #FF5A1F;
     --primary-foreground: #ffffff;
-    --secondary: #2c2c2e;
+    --secondary: #1f1f1f;
     --secondary-foreground: #ffffff;
-    --muted: #2c2c2e;
+    --muted: #1f1f1f;
     --muted-foreground: rgba(235, 235, 245, 0.55);
-    --accent: #3a3a3c;
+    --accent: #474747;
     --accent-foreground: #ffffff;
-    --destructive: #ff453a;
+    --destructive: #E0260E;
     --border: rgba(255, 255, 255, 0.08);
     --input: rgba(255, 255, 255, 0.08);
-    --ring: rgba(255, 255, 255, 0.20);
-    --chart-1: #ff9f0a;
-    --chart-2: #0a84ff;
-    --chart-3: #30d158;
-    --chart-4: #ff453a;
-    --chart-5: #bf5af2;
+    --ring: rgba(255, 90, 31, 0.45);
+    --chart-1: #FF5A1F;
+    --chart-2: #E0260E;
+    --chart-3: #6B2510;
+    --chart-4: #474747;
+    --chart-5: #ffffff;
     --radius: 0.75rem;
     --sidebar: #1c1c1e;
     --sidebar-foreground: #ffffff;
-    --sidebar-primary: #0a84ff;
+    --sidebar-primary: #FF5A1F;
     --sidebar-primary-foreground: #ffffff;
     --sidebar-accent: #3a3a3c;
     --sidebar-accent-foreground: #ffffff;
@@ -83,46 +83,53 @@
     --sidebar-ring: rgba(255, 255, 255, 0.20);
 
     /* FireWatch custom tokens */
-    --fw-fire: #ff5a1f;
-    --fw-critical: #ff3b30;
-    --fw-ember: #6b2510;
-    --fw-blue: #0a84ff;
-    --fw-green: #30d158;
-    --fw-yellow: #ffd60a;
-    --fw-glass: rgba(28, 28, 30, 0.72);
+    /* Palette stricte : noir, gris, orange feu, rouge, braise (+ pastilles OK / batterie) */
+    --fw-black: #000000;
+    --fw-gray: #474747;
+    --fw-fire: #FF5A1F;
+    --fw-red: #E0260E;
+    --fw-ember: #6B2510;
+    --fw-ok: #30D158;
+    --fw-low: #FFD60A;
+    --fw-glass: rgba(14, 14, 14, 0.72);
     --fw-glass-border: rgba(255, 255, 255, 0.08);
+
+    /* Dock de navigation : les pages s'ouvrent à sa droite (+16 px) */
+    --dock-left: 12px;
+    --dock-w: 58px;
+    --dock-space: calc(var(--dock-left) + var(--dock-w) + 16px);
 }
 
 /* Alias dark → root (app is always dark) */
 .dark {
     --background: #000000;
     --foreground: #ffffff;
-    --card: #1c1c1e;
+    --card: #0d0d0d;
     --card-foreground: #ffffff;
-    --popover: #2c2c2e;
+    --popover: #141414;
     --popover-foreground: #ffffff;
-    --primary: #0a84ff;
+    --primary: #FF5A1F;
     --primary-foreground: #ffffff;
-    --secondary: #2c2c2e;
+    --secondary: #1f1f1f;
     --secondary-foreground: #ffffff;
-    --muted: #2c2c2e;
+    --muted: #1f1f1f;
     --muted-foreground: rgba(235, 235, 245, 0.55);
-    --accent: #3a3a3c;
+    --accent: #474747;
     --accent-foreground: #ffffff;
-    --destructive: #ff453a;
+    --destructive: #E0260E;
     --border: rgba(255, 255, 255, 0.08);
     --input: rgba(255, 255, 255, 0.08);
-    --ring: rgba(255, 255, 255, 0.20);
-    --chart-1: #ff9f0a;
-    --chart-2: #0a84ff;
-    --chart-3: #30d158;
-    --chart-4: #ff453a;
-    --chart-5: #bf5af2;
+    --ring: rgba(255, 90, 31, 0.45);
+    --chart-1: #FF5A1F;
+    --chart-2: #E0260E;
+    --chart-3: #6B2510;
+    --chart-4: #474747;
+    --chart-5: #ffffff;
 }
 
 /* Glass morphism – panneau flottant type iOS */
 .glass {
-    background: rgba(28, 28, 30, 0.72);
+    background: rgba(14, 14, 14, 0.72);
     backdrop-filter: blur(24px) saturate(160%);
     -webkit-backdrop-filter: blur(24px) saturate(160%);
     border: 1px solid rgba(255, 255, 255, 0.08);
@@ -131,7 +138,7 @@
 
 /* Panel plus opaque pour pages avec contenu dense */
 .glass-solid {
-    background: rgba(18, 18, 20, 0.92);
+    background: rgba(10, 10, 10, 0.95);
     backdrop-filter: blur(32px) saturate(140%);
     -webkit-backdrop-filter: blur(32px) saturate(140%);
     border: 1px solid rgba(255, 255, 255, 0.07);
@@ -184,6 +191,19 @@
 .anim-d5 { animation-delay: 0.20s; }
 .anim-d6 { animation-delay: 0.24s; }
 
+/* Spring bounce style Apple tab – scale down → overshoot → settle */
+@keyframes fw-tab-spring {
+  0%   { transform: scale(1);    }
+  12%  { transform: scale(0.78); }
+  45%  { transform: scale(1.16); }
+  65%  { transform: scale(0.94); }
+  82%  { transform: scale(1.05); }
+  100% { transform: scale(1);    }
+}
+.squish-anim {
+  animation: fw-tab-spring 0.50s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
 /* Hover spring léger */
 .spring-hover {
   transition: transform 0.22s cubic-bezier(0.34,1.56,0.64,1),
@@ -211,3 +231,58 @@
         letter-spacing: -0.02em;
     }
 }
+
+/* ── Contrôles iOS ─────────────────────────────────────────────────────── */
+
+/* Curseur : piste grise visible, partie remplie orange (--fill = %) */
+.fw-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  background: transparent;
+  cursor: pointer;
+  --fill: 50%;
+}
+.fw-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, #FF5A1F 0, #FF5A1F var(--fill), #474747 var(--fill), #474747 100%);
+}
+.fw-range::-moz-range-track { height: 4px; border-radius: 999px; background: #474747; }
+.fw-range::-moz-range-progress { height: 4px; border-radius: 999px; background: #FF5A1F; }
+.fw-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+.fw-range::-moz-range-thumb {
+  width: 16px; height: 16px; border: 0; border-radius: 999px;
+  background: #ffffff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+.fw-range:focus-visible { outline: none; }
+.fw-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgba(255, 90, 31, 0.45); }
+
+/* Champ numérique sans flèches natives */
+.fw-num::-webkit-outer-spin-button,
+.fw-num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.fw-num { -moz-appearance: textfield; appearance: textfield; }
+
+/* Défilement interne discret */
+.fw-scroll { overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.14) transparent; }
+.fw-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.fw-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-down, .anim-up, .anim-left, .anim-right, .anim-scale, .anim-spring, .squish-anim { animation: none !important; }
+  .spring-hover, .spring-hover:hover, .spring-hover:active { transform: none !important; }
+}
+
+/* Toasts (sonner) : description lisible sur fond sombre */
+[data-sonner-toast] [data-description] { color: rgba(255, 255, 255, 0.62) !important; }
+[data-sonner-toast] { border-color: rgba(255, 255, 255, 0.1) !important; }

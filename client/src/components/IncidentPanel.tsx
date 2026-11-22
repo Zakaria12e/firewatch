@@ -1,23 +1,6 @@
 import { Flame, MapPin, Navigation, Clock, TriangleAlert, Shield, Eye, CheckCircle } from "lucide-react"
 import type { Incident, AlertLevelPayload } from "@/types"
-
-const LEVEL_LABEL: Record<string, string> = {
-  veille:        "Veille",
-  vigilance:     "Vigilance",
-  suspicion:     "Suspicion",
-  "pré-alerte":  "Pré-alerte",
-  feu_confirmé:  "Feu confirmé",
-  maîtrisé:      "Maîtrisé",
-}
-
-const LEVEL_COLOR: Record<string, string> = {
-  veille:        "rgba(235,235,245,0.38)",
-  vigilance:     "#ffd60a",
-  suspicion:     "#ff9f0a",
-  "pré-alerte":  "#ff6b00",
-  feu_confirmé:  "#ff3b30",
-  maîtrisé:      "#30d158",
-}
+import { levelColor as colorOfLevel, levelLabel } from "@/lib/palette"
 
 const DETAIL_LEVELS = new Set(["pré-alerte", "feu_confirmé", "maîtrisé"])
 
@@ -67,7 +50,7 @@ function Timeline({ events }: { events: { type: string; at: number }[] }) {
       <div className="absolute left-[7px] top-2 bottom-2 w-px bg-white/10" />
       <div className="flex flex-col gap-2">
         {events.map((ev, i) => {
-          const color = LEVEL_COLOR[ev.type] ?? "rgba(235,235,245,0.4)"
+          const color = colorOfLevel(ev.type)
           const t = new Date(ev.at)
           const time = `${t.getHours().toString().padStart(2, "0")}:${t.getMinutes().toString().padStart(2, "0")}:${t.getSeconds().toString().padStart(2, "0")}`
           return (
@@ -76,7 +59,7 @@ function Timeline({ events }: { events: { type: string; at: number }[] }) {
                 style={{ background: `${color}1a`, borderColor: color }} />
               <div className="flex-1 flex justify-between items-baseline">
                 <span className="text-[10px] font-medium" style={{ color }}>
-                  {LEVEL_LABEL[ev.type] ?? ev.type}
+                  {levelLabel(ev.type)}
                 </span>
                 <span className="text-[9px] tabular" style={{ color: "rgba(235,235,245,0.3)" }}>{time}</span>
               </div>
@@ -97,7 +80,7 @@ interface Props {
 export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
   const level = alertLevel.level
   const showDetails = DETAIL_LEVELS.has(level)
-  const levelColor = LEVEL_COLOR[level] ?? "#ffffff"
+  const levelColor = colorOfLevel(level)
   const isAlert = level === "feu_confirmé"
   const isMaitrised = level === "maîtrisé"
 
@@ -110,9 +93,9 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
         /* Spring d'entrée à pré-alerte+ */
         transition: "box-shadow 0.4s ease",
         boxShadow: isAlert
-          ? `0 4px 32px rgba(255,59,48,0.25), 0 0 0 1px rgba(255,59,48,0.3)`
+          ? `0 4px 32px rgba(224,38,14,0.25), 0 0 0 1px rgba(224,38,14,0.3)`
           : isMaitrised
-          ? `0 4px 32px rgba(48,209,88,0.15)`
+          ? `0 4px 32px rgba(255,255,255,0.06)`
           : "0 4px 32px rgba(0,0,0,0.30)",
       }}
     >
@@ -121,9 +104,9 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
         className="shrink-0 px-4 pt-3.5 pb-3"
         style={{
           background: isAlert
-            ? "linear-gradient(160deg, rgba(107,37,16,0.6) 0%, rgba(255,59,48,0.12) 100%)"
+            ? "linear-gradient(160deg, rgba(107,37,16,0.6) 0%, rgba(224,38,14,0.12) 100%)"
             : isMaitrised
-            ? "rgba(48,209,88,0.06)"
+            ? "rgba(255,255,255,0.03)"
             : "transparent",
           borderBottom: "1px solid rgba(255,255,255,0.07)",
         }}
@@ -139,7 +122,7 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
               className={`text-[13px] font-semibold leading-none ${isAlert ? "animate-pulse" : ""}`}
               style={{ color: levelColor, letterSpacing: "-0.374px" }}
             >
-              {LEVEL_LABEL[level] ?? level}
+              {levelLabel(level)}
             </span>
           </div>
 
@@ -155,8 +138,8 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
           <span
             className="text-[10px] font-semibold tabular ml-auto"
             style={{
-              color: alertLevel.riskIndex.value >= 75 ? "#ff3b30"
-                   : alertLevel.riskIndex.value >= 50 ? "#ff9f0a"
+              color: alertLevel.riskIndex.value >= 75 ? "#E0260E"
+                   : alertLevel.riskIndex.value >= 50 ? "#FF5A1F"
                    : "rgba(235,235,245,0.55)",
             }}
           >
@@ -182,7 +165,7 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
               style={{
                 background: "rgba(255,90,31,0.14)",
                 border: "1px solid rgba(255,90,31,0.3)",
-                color: "#ff9f0a",
+                color: "#FF5A1F",
               }}
             >
               Test : allumer un feu
@@ -208,7 +191,7 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
                 <span
                   key={id}
                   className="px-1.5 py-0.5 text-[10px] font-mono rounded-md"
-                  style={{ background: "rgba(255,159,10,0.12)", border: "1px solid rgba(255,159,10,0.2)", color: "#ff9f0a" }}
+                  style={{ background: "rgba(255,90,31,0.12)", border: "1px solid rgba(255,90,31,0.2)", color: "#FF5A1F" }}
                 >
                   {id}
                 </span>
@@ -273,14 +256,14 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
             {/* Villages menacés */}
             {incident.threatenedPlaces && incident.threatenedPlaces.length > 0 && (
               <div>
-                <div className="flex items-center gap-1.5 mb-1.5" style={{ color: "#ff3b30" }}>
+                <div className="flex items-center gap-1.5 mb-1.5" style={{ color: "#E0260E" }}>
                   <TriangleAlert className="w-3 h-3" />
                   <span className="text-[10px] font-semibold">Villages menacés</span>
                 </div>
                 {incident.threatenedPlaces.map((p) => (
                   <div key={p.name} className="flex justify-between text-[11px] pl-4 py-0.5">
                     <span className="text-white/70">{p.name}</span>
-                    <span className="font-mono tabular" style={{ color: "#ff9f0a" }}>{formatEta(p.eta)}</span>
+                    <span className="font-mono tabular" style={{ color: "#FF5A1F" }}>{formatEta(p.eta)}</span>
                   </div>
                 ))}
               </div>
@@ -295,7 +278,7 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
                     <span
                       key={id}
                       className="px-1.5 py-0.5 text-[10px] font-mono rounded-md"
-                      style={{ background: "rgba(255,90,31,0.10)", border: "1px solid rgba(255,90,31,0.2)", color: "#ff9f0a" }}
+                      style={{ background: "rgba(255,90,31,0.10)", border: "1px solid rgba(255,90,31,0.2)", color: "#FF5A1F" }}
                     >
                       {id}
                     </span>
@@ -349,7 +332,7 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
               style={{
                 background: "rgba(255,90,31,0.18)",
                 border: "1px solid rgba(255,90,31,0.35)",
-                color: "#ff9f0a",
+                color: "#FF5A1F",
               }}
             >
               Acquitter

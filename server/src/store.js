@@ -16,7 +16,7 @@ export async function initStore(uri) {
         temp: Number, hum: Number, smoke: Number, co: Number, flame: Boolean,
         wind_speed: Number, wind_dir: Number, bat: Number, lat: Number, lon: Number,
         status: String,
-      })
+      }, { strict: false })   // canaux propres à chaque type d'appareil (rssi, tmax, fmc…)
     )
     Incident = mongoose.model(
       "Incident",

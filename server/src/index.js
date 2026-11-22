@@ -357,7 +357,8 @@ coapServer.on("request", (req, res) => {
     readings,
     status,
     risk: riskIndex(readings),
-    period: danger ? config.periodAlert : config.periodNormal,
+    // Passerelles : statistiques toutes les 30 s par leur backhaul (période fixe)
+    period: v.rx !== undefined ? 30 : danger ? config.periodAlert : config.periodNormal,
     bytes: req.payload.length,
     gw: typeof v.gw === "string" ? v.gw : null,   // passerelle qui a relayé le paquet
     seq: v.seq,

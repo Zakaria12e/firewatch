@@ -52,9 +52,13 @@ export function evaluate(allNodes, now = Date.now(), context = {}) {
   // ----------------------------------------------------------------
   const annotated = allNodes.map((node) => {
     let st = nodeState.get(node.id) || { baseline: {}, history: {} }
+    // evaluate() tourne à chaque paquet de n'importe quel appareil : l'historique et la
+    // ligne de base d'un nœud ne bougent qu'à l'arrivée d'un NOUVEAU paquet de ce nœud
+    // (sinon un appareil qui émet peu se remplit de copies identiques → faux « figé »)
+    const isNew = st.lastTs === undefined || node.ts !== st.lastTs
 
     // Historique glissant
-    const history = updateHistory(st.history, node.readings || {})
+    const history = isNew ? updateHistory(st.history, node.readings || {}) : st.history
 
     // Santé
     const nodeWithHistory = { ...node, _history: history }
@@ -63,21 +67,26 @@ export function evaluate(allNodes, now = Date.now(), context = {}) {
       events.push({ type: "santé", nodeId: node.id, fault: health.fault, reasons: health.reasons })
     }
 
-    // Baseline EWMA + z-scores
-    const z = {}
-    const rates = {}
-    const baseline = { ...st.baseline }
-    for (const key of ["temp", "hum", "smoke", "co", "wind_speed"]) {
-      const val = node.readings?.[key]
-      if (val === undefined) continue
-      const { state, z: zi, ratePerMin } = updateBaseline(baseline[key], val, node.ts, key)
-      baseline[key] = state
-      z[key] = zi
-      rates[key] = ratePerMin
+    // Baseline EWMA + z-scores (recalculés seulement sur nouveau paquet)
+    let z = st.z || {}
+    let rates = st.rates || {}
+    let baseline = st.baseline
+    if (isNew) {
+      z = {}
+      rates = {}
+      baseline = { ...st.baseline }
+      for (const key of ["temp", "hum", "smoke", "co", "wind_speed"]) {
+        const val = node.readings?.[key]
+        if (val === undefined) continue
+        const { state, z: zi, ratePerMin } = updateBaseline(baseline[key], val, node.ts, key)
+        baseline[key] = state
+        z[key] = zi
+        rates[key] = ratePerMin
+      }
     }
 
     // Mémoriser l'état mis à jour
-    nodeState.set(node.id, { baseline, history, _prevFault: health.fault })
+    nodeState.set(node.id, { baseline, history, z, rates, lastTs: node.ts, _prevFault: health.fault })
 
     return { ...node, health, z, rates, _history: history }
   })

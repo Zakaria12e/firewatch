@@ -5,37 +5,37 @@ const SCENARIOS = [
     name: "chergui",
     label: "Chergui",
     desc: "Feu à l'est, vent fort d'est – détection rapide sous le vent.",
-    color: "border-red-500/50 hover:border-red-500",
+    color: "border-[#FF5A1F]/40 hover:border-[#FF5A1F]",
   },
   {
     name: "au-vent",
     label: "Au vent",
     desc: "Feu à l'ouest, vent d'est – fumée s'éloigne, détection plus lente.",
-    color: "border-orange-500/50 hover:border-orange-500",
+    color: "border-white/10 hover:border-[#FF5A1F]",
   },
   {
     name: "nuit",
     label: "Nuit",
     desc: "Feu de nuit, faible vent.",
-    color: "border-blue-500/50 hover:border-blue-500",
+    color: "border-white/10 hover:border-[#FF5A1F]",
   },
   {
     name: "deux-foyers",
     label: "Deux foyers",
     desc: "Sautes de feu – deux incidents séparés.",
-    color: "border-red-500/50 hover:border-red-500",
+    color: "border-[#FF5A1F]/40 hover:border-[#FF5A1F]",
   },
   {
     name: "changement-vent",
     label: "Changement de vent",
     desc: "Vent tourne de 90° pendant le feu – prédiction pivote.",
-    color: "border-yellow-500/50 hover:border-yellow-500",
+    color: "border-white/10 hover:border-[#FF5A1F]",
   },
   {
     name: "pluie",
     label: "Pluie",
     desc: "Feu démarre, pluie arrive et l'éteint – incident maîtrisé.",
-    color: "border-cyan-500/50 hover:border-cyan-500",
+    color: "border-white/10 hover:border-[#FF5A1F]",
   },
 ]
 
@@ -51,14 +51,14 @@ export function ScenariosPage({ sendCommand }: Props) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-6 space-y-6">
+    <div className="flex-1 min-h-0 overflow-y-auto fw-scroll p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-orange-400 uppercase tracking-widest">
+        <h2 className="text-lg font-semibold text-[#FF5A1F] uppercase tracking-widest">
           Scénarios
         </h2>
         <button
           onClick={reset}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:border-zinc-500 transition-colors"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:border-white/30 transition-colors"
         >
           <RotateCcw className="w-3.5 h-3.5" />
           Réinitialiser
@@ -88,7 +88,7 @@ export function ScenariosPage({ sendCommand }: Props) {
         </p>
         <p className="mt-1">
           Les résultats apparaissent automatiquement dans la page{" "}
-          <span className="text-orange-400">Performance</span> une fois le banc terminé.
+          <span className="text-[#FF5A1F]">Performance</span> une fois le banc terminé.
         </p>
       </div>
     </div>

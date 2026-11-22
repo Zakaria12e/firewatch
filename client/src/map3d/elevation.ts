@@ -81,7 +81,7 @@ export class ElevationGrid {
     const ll: [number, number] = [0, 0]
     for (let i = this.cursor; i < end; i++) {
       ll[0] = this.lon[i]; ll[1] = this.lat[i]
-      let h: number | null = null
+      let h: number | null
       try { h = map.queryTerrainElevation(ll) } catch { h = null }
       // 0 = tuile pas encore chargée (la zone est entre 400 et 2000 m d'altitude)
       if (h !== null && Number.isFinite(h) && h > 1) {

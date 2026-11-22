@@ -1,34 +1,11 @@
-import { Wifi, WifiOff, Flame, Bell, BellOff, Wind } from "lucide-react"
+import { Flame, Bell, BellOff, Wind } from "lucide-react"
 import type { FireWatchState, AlertLevelPayload } from "@/types"
-
-const LEVEL_LABEL: Record<string, string> = {
-  veille:        "Veille",
-  vigilance:     "Vigilance",
-  suspicion:     "Suspicion",
-  "pré-alerte":  "Pré-alerte",
-  feu_confirmé:  "Feu confirmé",
-  maîtrisé:      "Maîtrisé",
-}
-
-const LEVEL_COLOR: Record<string, string> = {
-  veille:        "rgba(235,235,245,0.38)",
-  vigilance:     "#ffd60a",
-  suspicion:     "#ff9f0a",
-  "pré-alerte":  "#ff6b00",
-  feu_confirmé:  "#ff3b30",
-  maîtrisé:      "#30d158",
-}
+import { C, alpha, levelColor, levelLabel } from "@/lib/palette"
 
 const MODE_LABEL: Record<string, string> = {
   reel:      "Réel",
   manuel:    "Manuel",
-  prevision: "Prévis.",
-}
-
-const MODE_COLOR: Record<string, string> = {
-  reel:      "#30d158",
-  manuel:    "#ffd60a",
-  prevision: "#64d2ff",
+  prevision: "Prévision",
 }
 
 interface Props {
@@ -38,6 +15,8 @@ interface Props {
   onToggleSiren: () => void
 }
 
+const Divider = () => <div className="w-px h-3.5 shrink-0" style={{ background: C.line }} />
+
 export function TopBar({ state, alertLevel, sirenOn, onToggleSiren }: Props) {
   const online  = state.nodes.filter((n) => n.online).length
   const total   = state.nodes.length
@@ -46,118 +25,88 @@ export function TopBar({ state, alertLevel, sirenOn, onToggleSiren }: Props) {
   const detWind = alertLevel.wind
   const weather = state.weather
   const windSpeed = detWind?.speed ?? weather?.wind_speed
-  const levelColor = LEVEL_COLOR[level] ?? "#ffffff"
+  const color   = levelColor(level)
   const isAlert = level === "feu_confirmé"
+  const sim     = state.simulatorConnected
 
   return (
-    /* Conteneur plein-écran pointer-events-none pour centrer */
     <div className="fixed top-3 inset-x-0 z-50 flex justify-center pointer-events-none">
       <div
         className="glass anim-down pointer-events-auto h-11 flex items-center px-4"
-        style={{
-          borderRadius: 22,
-          width: "min(780px, calc(100vw - 24px))",
-          gap: 0,
-        }}
+        style={{ borderRadius: 22, width: "min(780px, calc(100vw - 24px))" }}
       >
         {/* ── Colonne gauche ── */}
         <div className="flex-1 flex items-center gap-3 min-w-0">
-          {/* Sim */}
-          <div className="flex items-center gap-1.5 shrink-0">
-            {state.simulatorConnected
-              ? <Wifi  className="w-3 h-3" style={{ color: "#30d158" }} />
-              : <WifiOff className="w-3 h-3" style={{ color: "rgba(235,235,245,0.25)" }} />}
-            <span className="text-[11px] tabular"
-              style={{ color: state.simulatorConnected ? "#30d158" : "rgba(235,235,245,0.25)" }}>
-              {state.simulatorConnected ? "Sim" : "Offline"}
-            </span>
+          <div className="flex items-center gap-1.5 shrink-0" title={sim ? "Simulateur connecté" : "Simulateur déconnecté"}>
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: sim ? C.ok : C.gray }} />
+            <span className="text-[11px]" style={{ color: sim ? C.text2 : C.text4 }}>{sim ? "Sim" : "Hors ligne"}</span>
           </div>
 
-          <div className="w-px h-3.5 shrink-0" style={{ background: "rgba(255,255,255,0.10)" }} />
+          <Divider />
 
-          {/* Appareils */}
-          <span className="text-[11px] tabular shrink-0" style={{ color: "rgba(235,235,245,0.45)" }}>
-            {online}
-            <span style={{ color: "rgba(235,235,245,0.22)" }}>/{total}</span>
+          <span className="text-[11px] tabular shrink-0" style={{ color: C.text2 }} title="Appareils en ligne">
+            {online}<span style={{ color: C.text4 }}>/{total}</span>
           </span>
 
-          <div className="w-px h-3.5 shrink-0" style={{ background: "rgba(255,255,255,0.10)" }} />
+          <Divider />
 
-          {/* Niveau d'alerte */}
           <div className="flex items-center gap-1.5 min-w-0 shrink-0">
-            <Flame className={`w-3.5 h-3.5 shrink-0 ${isAlert ? "animate-pulse" : ""}`} style={{ color: levelColor }} />
-            <span
-              className={`text-[11px] font-semibold tabular truncate ${isAlert ? "animate-pulse" : ""}`}
-              style={{ color: levelColor, letterSpacing: "-0.3px" }}
-            >
-              {LEVEL_LABEL[level] ?? level}
+            <Flame className={`w-3.5 h-3.5 shrink-0 ${isAlert ? "animate-pulse" : ""}`} style={{ color }} />
+            <span className="text-[11px] font-semibold truncate" style={{ color, letterSpacing: "-0.3px" }}>
+              {levelLabel(level)}
             </span>
             {alertLevel.score > 0 && (
-              <span className="text-[10px] tabular shrink-0" style={{ color: "rgba(235,235,245,0.30)" }}>
-                {alertLevel.score}%
-              </span>
+              <span className="text-[10px] tabular shrink-0" style={{ color: C.text4 }}>{alertLevel.score}%</span>
             )}
           </div>
         </div>
 
-        {/* ── Centre : Logo ── */}
+        {/* ── Centre : logo ── */}
         <div className="shrink-0 px-5 flex items-center justify-center">
-          <span
-            className="text-[13px] font-bold uppercase select-none tracking-tight"
-            style={{ color: "#ff9f0a", letterSpacing: "-0.3px" }}
-          >
+          <span className="text-[13px] font-bold uppercase select-none" style={{ color: C.fire, letterSpacing: "-0.3px" }}>
             FireWatch
           </span>
         </div>
 
         {/* ── Colonne droite ── */}
         <div className="flex-1 flex items-center justify-end gap-2.5">
-          {/* Météo */}
           {(weather || detWind) && (
             <div className="flex items-center gap-1.5 shrink-0">
               {weather && (
-                <span className="text-[11px] tabular" style={{ color: "rgba(235,235,245,0.45)" }}>
+                <span className="text-[11px] tabular" style={{ color: C.text2 }}>
                   {weather.temp?.toFixed(0)}°
-                  <span className="mx-0.5 opacity-30">·</span>
+                  <span className="mx-0.5" style={{ color: C.text4 }}>·</span>
                   {weather.hum?.toFixed(0)}%
                 </span>
               )}
               {windSpeed !== undefined && (
-                <div className="flex items-center gap-1">
-                  <Wind className="w-3 h-3" style={{ color: "rgba(235,235,245,0.3)" }} />
-                  <span className="text-[11px] tabular" style={{ color: detWind ? "#64d2ff" : "rgba(235,235,245,0.45)" }}>
-                    {windSpeed.toFixed(1)} m/s
-                  </span>
+                <div className="flex items-center gap-1" title="Vent mesuré">
+                  <Wind className="w-3 h-3" style={{ color: C.text3 }} />
+                  <span className="text-[11px] tabular" style={{ color: C.text2 }}>{windSpeed.toFixed(1)} m/s</span>
                 </div>
               )}
-              {/* Badge mode */}
               <span
                 className="px-1.5 py-0.5 text-[8px] font-bold uppercase rounded-full"
-                style={{
-                  color: MODE_COLOR[mode] ?? "#fff",
-                  background: `${MODE_COLOR[mode] ?? "#fff"}16`,
-                  border: `1px solid ${MODE_COLOR[mode] ?? "#fff"}28`,
-                  letterSpacing: "0.07em",
-                }}
+                style={{ color: C.text2, background: C.fill, border: `1px solid ${C.line}`, letterSpacing: "0.07em" }}
+                title="Mode météo"
               >
-                {MODE_LABEL[mode]}
+                {MODE_LABEL[mode] ?? mode}
               </span>
             </div>
           )}
 
-          {/* Sirène */}
           <button
             onClick={onToggleSiren}
             className="w-7 h-7 flex items-center justify-center rounded-full spring-hover shrink-0"
             style={{
-              background: sirenOn ? "rgba(255,59,48,0.18)" : "rgba(255,255,255,0.06)",
-              border: `1px solid ${sirenOn ? "rgba(255,59,48,0.35)" : "rgba(255,255,255,0.08)"}`,
+              background: sirenOn ? alpha(C.red, 0.2) : C.fill,
+              border: `1px solid ${sirenOn ? alpha(C.red, 0.45) : C.line}`,
             }}
-            title={sirenOn ? "Sirène ON" : "Sirène auto"}
+            title={sirenOn ? "Sirènes forcées : arrêter" : "Forcer les sirènes"}
           >
             {sirenOn
-              ? <Bell    className="w-3.5 h-3.5 animate-pulse" style={{ color: "#ff3b30" }} />
-              : <BellOff className="w-3.5 h-3.5" style={{ color: "rgba(235,235,245,0.35)" }} />}
+              ? <Bell    className="w-3.5 h-3.5 animate-pulse" style={{ color: C.red }} />
+              : <BellOff className="w-3.5 h-3.5" style={{ color: C.text3 }} />}
           </button>
         </div>
       </div>

@@ -3,20 +3,20 @@ import type { Incident, AlertLevel } from "@/types"
 
 const LEVEL_COLOR: Record<AlertLevel, string> = {
   veille:        "text-muted-foreground",
-  vigilance:     "text-yellow-400",
-  suspicion:     "text-orange-400",
-  "pré-alerte":  "text-orange-500",
-  feu_confirmé:  "text-red-500",
-  maîtrisé:      "text-green-400",
+  vigilance:     "text-[#FF5A1F]",
+  suspicion:     "text-[#FF5A1F]",
+  "pré-alerte":  "text-[#FF5A1F]",
+  feu_confirmé:  "text-[#E0260E]",
+  maîtrisé:      "text-white/70",
 }
 
 const LEVEL_BG: Record<AlertLevel, string> = {
-  veille:        "bg-zinc-700",
-  vigilance:     "bg-yellow-500",
-  suspicion:     "bg-orange-500",
-  "pré-alerte":  "bg-orange-600",
-  feu_confirmé:  "bg-red-600",
-  maîtrisé:      "bg-green-600",
+  veille:        "bg-[#474747]",
+  vigilance:     "bg-[#6B2510]",
+  suspicion:     "bg-[#FF5A1F]",
+  "pré-alerte":  "bg-[#FF5A1F]",
+  feu_confirmé:  "bg-[#E0260E]",
+  maîtrisé:      "bg-[#474747]",
 }
 
 function fmt(ms: number) {
@@ -41,11 +41,11 @@ function IncidentTimeline({ incident }: { incident: Incident }) {
       <div className="text-xs text-muted-foreground uppercase tracking-wider">Chronologie</div>
       <div className="relative">
         {/* Barre de fond */}
-        <div className="h-2 rounded-full bg-zinc-800" />
+        <div className="h-2 rounded-full bg-white/10" />
         {/* Barre de progression */}
         <div
           className={`absolute top-0 left-0 h-2 rounded-full ${
-            incident.status === "maîtrisé" ? "bg-green-600" : "bg-orange-500"
+            incident.status === "maîtrisé" ? "bg-[#474747]" : "bg-[#FF5A1F]"
           }`}
           style={{ width: "100%" }}
         />
@@ -82,8 +82,8 @@ function IncidentTimeline({ incident }: { incident: Incident }) {
         ))}
         {incident.endedAt && (
           <div className="flex items-center gap-2 text-xs">
-            <div className="w-2 h-2 rounded-full shrink-0 bg-green-600" />
-            <span className="text-green-400">maîtrisé</span>
+            <div className="w-2 h-2 rounded-full shrink-0 bg-[#474747]" />
+            <span className="text-white/70">maîtrisé</span>
             <span className="text-muted-foreground">{fmt(incident.endedAt)}</span>
             {incident.reason && (
               <span className="text-muted-foreground">– {incident.reason}</span>
@@ -106,8 +106,8 @@ function IncidentDetail({ incident }: { incident: Incident }) {
         <div
           className={`ml-auto text-xs px-2 py-0.5 rounded-full ${
             incident.status === "actif"
-              ? "bg-red-500/20 text-red-400"
-              : "bg-green-500/20 text-green-400"
+              ? "bg-[#E0260E]/20 text-[#E0260E]"
+              : "bg-white/10 text-white/70"
           }`}
         >
           {incident.status}
@@ -117,7 +117,7 @@ function IncidentDetail({ incident }: { incident: Incident }) {
       <div className="grid grid-cols-2 gap-3 text-xs font-mono">
         <div>
           <span className="text-muted-foreground">Score </span>
-          <span className="text-orange-400 font-bold">{incident.score}%</span>
+          <span className="text-[#FF5A1F] font-bold">{incident.score}%</span>
         </div>
         <div>
           <span className="text-muted-foreground">Durée </span>
@@ -190,11 +190,11 @@ export function IncidentsPage() {
   }
 
   return (
-    <div className="flex flex-1 overflow-hidden">
+    <div className="flex flex-1 min-h-0 overflow-hidden">
       {/* Liste */}
-      <div className="w-72 shrink-0 border-r border-border overflow-y-auto">
+      <div className="w-72 shrink-0 border-r border-border overflow-y-auto fw-scroll">
         <div className="p-4 border-b border-border">
-          <h2 className="text-lg font-semibold text-orange-400 uppercase tracking-widest">Incidents</h2>
+          <h2 className="text-lg font-semibold text-[#FF5A1F] uppercase tracking-widest">Incidents</h2>
           <div className="text-xs text-muted-foreground mt-0.5">{incidents.length} enregistré(s)</div>
         </div>
         {incidents.length === 0 ? (
@@ -205,13 +205,13 @@ export function IncidentsPage() {
               key={inc.id}
               onClick={() => setSelected(inc)}
               className={`w-full text-left p-3 border-b border-border/40 hover:bg-white/3 transition-colors ${
-                selected?.id === inc.id ? "bg-orange-500/10" : ""
+                selected?.id === inc.id ? "bg-[#FF5A1F]/10" : ""
               }`}
             >
               <div className="flex items-center gap-2">
                 <div
                   className={`w-2 h-2 rounded-full shrink-0 ${
-                    inc.status === "actif" ? "bg-red-500 animate-pulse" : "bg-zinc-600"
+                    inc.status === "actif" ? "bg-[#E0260E] animate-pulse" : "bg-[#474747]"
                   }`}
                 />
                 <span className="font-mono text-xs text-muted-foreground">{inc.id}</span>
@@ -228,7 +228,7 @@ export function IncidentsPage() {
       </div>
 
       {/* Détail */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 min-w-0 overflow-y-auto fw-scroll">
         {selected ? (
           <IncidentDetail incident={selected} />
         ) : (

@@ -38,10 +38,11 @@ function writeStorage(key: string, value: string) {
 
 function initialQuality(): EffectsQuality {
   const v = readStorage(KEY_QUALITY)
-  return v === "bas" || v === "moyen" || v === "haut" ? v : "haut"
+  return v === "bas" || v === "moyen" || v === "haut" ? v : "moyen"
 }
 
-let quality: EffectsQuality = typeof window === "undefined" ? "haut" : initialQuality()
+// Moyen par défaut : ~55 FPS en 1080p sur GPU intégré (Haut ≈ 21 FPS pendant un feu)
+let quality: EffectsQuality = typeof window === "undefined" ? "moyen" : initialQuality()
 let showFps = typeof window === "undefined" ? false : readStorage(KEY_FPS) === "1"
 const listeners = new Set<() => void>()
 const notify = () => listeners.forEach((l) => l())
@@ -61,7 +62,7 @@ export function setShowFps(v: boolean) {
 }
 
 export function useEffectsQuality(): EffectsQuality {
-  return useSyncExternalStore(subscribe, getEffectsQuality, () => "haut" as EffectsQuality)
+  return useSyncExternalStore(subscribe, getEffectsQuality, () => "moyen" as EffectsQuality)
 }
 export function useShowFps(): boolean {
   return useSyncExternalStore(subscribe, getShowFps, () => false)

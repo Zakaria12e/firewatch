@@ -1,15 +1,12 @@
 import { useRef, useCallback, useMemo, useEffect, useState } from "react"
-import ReactMap, { Marker, Source, Layer, NavigationControl, type MapRef } from "react-map-gl/maplibre"
+import ReactMap, { Marker, Source, Layer, type MapRef } from "react-map-gl/maplibre"
 import type { Map as MapLibreMap, MapLayerMouseEvent, Marker as MarkerInstance } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
-import type { FireWatchState, WorldState, AlertLevelPayload, FireNode, WorldDevice, NodeReadings } from "@/types"
+import type { FireWatchState, WorldState, AlertLevelPayload, FireNode, WorldDevice } from "@/types"
 import type { Feature, FeatureCollection, Polygon } from "geojson"
-import {
-  Cpu, Thermometer, CloudFog, TriangleAlert, Flame, Camera,
-  Wind, Leaf, CloudRain, Bell, Radio, Mountain, Eye, EyeOff, X,
-  Battery, Signal,
-} from "lucide-react"
-import type { LucideIcon } from "lucide-react"
+import { Mountain, Eye, EyeOff, X, Battery, Signal, Plus, Minus, Navigation } from "lucide-react"
+import { C, alpha, healthColor, healthLabel, kindMeta } from "@/lib/palette"
+import { getReadings } from "@/lib/deviceReadings"
 import { FireFxLayer, FX_LAYER_ID } from "@/map3d/FireFxLayer"
 import { GroundOverlay, GROUND_LAYER } from "@/map3d/groundOverlay"
 import { useEffectsQuality, useReducedMotion, useShowFps } from "@/map3d/quality"
@@ -161,89 +158,6 @@ function radioLinksGeoJSON(devices: WorldDevice[], nodeById: Map<string, FireNod
   return { type: "FeatureCollection", features }
 }
 
-// ---------------------------------------------------------------------------
-// Icônes par type d'appareil
-// ---------------------------------------------------------------------------
-const DEVICE_ICONS: Record<string, { Icon: LucideIcon; color: string; bg: string }> = {
-  station:  { Icon: Cpu,           color: "#93c5fd", bg: "#1d4ed8" },
-  temp:     { Icon: Thermometer,   color: "#fdba74", bg: "#c2410c" },
-  smoke:    { Icon: CloudFog,      color: "#c4b5fd", bg: "#7c3aed" },
-  co:       { Icon: TriangleAlert, color: "#fde047", bg: "#a16207" },
-  flame:    { Icon: Flame,         color: "#fca5a5", bg: "#b91c1c" },
-  thermal:  { Icon: Camera,        color: "#67e8f9", bg: "#0e7490" },
-  wind:     { Icon: Wind,          color: "#d4d4d4", bg: "#525252" },
-  fuel:     { Icon: Leaf,          color: "#86efac", bg: "#166534" },
-  rain:     { Icon: CloudRain,     color: "#93c5fd", bg: "#1d4ed8" },
-  siren:    { Icon: Bell,          color: "#fda4af", bg: "#be123c" },
-  gateway:  { Icon: Radio,         color: "#6ee7b7", bg: "#065f46" },
-}
-
-// ---------------------------------------------------------------------------
-// Tooltip appareil (style iOS)
-// ---------------------------------------------------------------------------
-const DEVICE_LABELS: Record<string, string> = {
-  station: "Station",   temp: "Température",  smoke: "Fumée",
-  co: "CO",             flame: "Flamme",       thermal: "Thermique",
-  wind: "Vent",         fuel: "Fuel",          rain: "Pluie",
-  siren: "Sirène",      gateway: "Passerelle",
-}
-
-const DEVICE_MODELS: Record<string, string> = {
-  station: "ESP32+LoRa", temp: "DHT22",    smoke: "MQ-2",       co: "MQ-7",
-  flame: "KY-026",       thermal: "MLX90640", wind: "Anémomètre", fuel: "Sonde FMC",
-  rain: "Pluviomètre",   siren: "Sirène+Relais", gateway: "LoRaWAN GW",
-}
-
-type Measurement = { label: string; value: string; unit: string }
-
-function getReadings(kind: string, r: NodeReadings): Measurement[] {
-  const m: Measurement[] = []
-  const add = (label: string, v: number | undefined, unit: string, digits = 1) => {
-    if (v !== undefined) m.push({ label, value: v.toFixed(digits), unit })
-  }
-  switch (kind) {
-    case "station":
-      add("Température", r.temp, "°C", 1); add("Humidité", r.hum, "%", 0)
-      add("Fumée", r.smoke, "ppm", 0); add("CO", r.co, "ppm", 0); break
-    case "temp":
-      add("Température", r.temp, "°C", 1); add("Humidité", r.hum, "%", 0); break
-    case "smoke":
-      add("Fumée", r.smoke, "ppm", 0); add("Humidité", r.hum, "%", 0); break
-    case "co":
-      add("CO", r.co, "ppm", 0); break
-    case "flame":
-      if (r.ir !== undefined) m.push({ label: "IR", value: r.ir.toFixed(2), unit: "" })
-      if (r.flame !== undefined) m.push({ label: "Flamme", value: r.flame ? "Oui" : "Non", unit: "" }); break
-    case "thermal":
-      add("T. max", r.tmax, "°C", 1)
-      add("Relèvement", r.hot_bearing, "°", 0)
-      add("Pixels chauds", r.hot_px, "", 0); break
-    case "wind":
-      add("Vitesse", r.wind_speed, "m/s"); add("Direction", r.wind_dir, "°", 0)
-      add("Rafale", r.gust, "m/s"); break
-    case "fuel":
-      add("FMC", r.fmc, "%", 1); break
-    case "rain":
-      add("Pluie", r.rain, "mm/h"); break
-    case "gateway":
-      add("Paquets reçus", r.rx, "", 0); add("RSSI moyen", r.rssi_avg, "dBm", 0); break
-    case "siren":
-      if (r.on !== undefined) m.push({ label: "Sirène", value: r.on ? "En marche" : "Arrêt", unit: "" }); break
-  }
-  return m
-}
-
-const FAULT_LABEL: Record<string, string> = {
-  ok: "En ligne", hors_ligne: "Hors ligne", figé: "Figé",
-  aberrant: "Aberrant", dérive: "Dérive", batterie_faible: "Batterie faible",
-  offline: "Hors ligne",
-}
-
-const FAULT_COLOR: Record<string, string> = {
-  ok: "#30d158", hors_ligne: "#636366", figé: "#0a84ff", aberrant: "#ff3b30",
-  dérive: "#ff9f0a", batterie_faible: "#ffd60a", offline: "#636366",
-}
-
 /** État affiché : santé calculée par le serveur, sinon panne injectée dans le monde. */
 function deviceState(device: WorldDevice, node?: FireNode): string {
   if (node) return node.online ? (node.health ?? "ok") : "hors_ligne"
@@ -259,10 +173,10 @@ function DeviceTooltip({
   x: number
   y: number
 }) {
-  const cfg = DEVICE_ICONS[device.kind] ?? DEVICE_ICONS.station
-  const { Icon, color } = cfg
+  const meta = kindMeta(device.kind)
+  const Icon = meta.Icon
   const fault = deviceState(device, node)
-  const faultColor = FAULT_COLOR[fault] ?? "#ffffff"
+  const faultColor = healthColor(fault)
   const bat = node?.readings?.bat
   const rssi = node?.readings?.rssi
   const snr = node?.readings?.snr
@@ -281,7 +195,7 @@ function DeviceTooltip({
       onClick={(e) => e.stopPropagation()}
       style={{
         left: cx, top: cy, width: W,
-        background: "rgba(28,28,30,0.90)",
+        background: "rgba(12,12,12,0.92)",
         backdropFilter: "blur(32px) saturate(160%)",
         WebkitBackdropFilter: "blur(32px) saturate(160%)",
         border: "1px solid rgba(255,255,255,0.10)",
@@ -292,14 +206,14 @@ function DeviceTooltip({
     >
       {/* En-tête */}
       <div className="flex items-center gap-3 px-4 pt-3.5 pb-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
-        <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: `${color}20` }}>
-          <Icon className="w-5 h-5" style={{ color }} />
+        <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: "rgba(255,255,255,0.08)" }}>
+          <Icon className="w-5 h-5" style={{ color: C.text }} />
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-[12px] font-semibold text-white/90 leading-none truncate" style={{ letterSpacing: "-0.374px" }}>
-            {DEVICE_LABELS[device.kind] ?? device.kind}
+            {meta.label}
           </div>
-          <div className="text-[10px] text-white/35 font-mono mt-0.5">{DEVICE_MODELS[device.kind]}</div>
+          <div className="text-[10px] text-white/35 font-mono mt-0.5">{meta.model}</div>
           <div className="text-[9px] text-white/25 font-mono mt-0.5 truncate">{device.id}</div>
         </div>
         <button
@@ -318,17 +232,17 @@ function DeviceTooltip({
             className="px-2 py-0.5 text-[10px] font-medium rounded-full"
             style={{ background: `${faultColor}18`, color: faultColor, border: `1px solid ${faultColor}28` }}
           >
-            {FAULT_LABEL[fault] ?? fault}
+            {healthLabel(fault)}
           </span>
           {bat !== undefined && (
             <div className="flex items-center gap-1.5">
-              <Battery className="w-3 h-3" style={{ color: bat < 15 ? "#ff3b30" : bat < 40 ? "#ffd60a" : "#30d158" }} />
+              <Battery className="w-3 h-3" style={{ color: bat < 15 ? C.red : C.text3 }} />
               <div className="w-14 h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.10)" }}>
                 <div
                   className="h-full rounded-full transition-all"
                   style={{
                     width: `${bat}%`,
-                    background: bat < 15 ? "#ff3b30" : bat < 40 ? "#ffd60a" : "#30d158",
+                    background: bat < 15 ? C.red : C.fire,
                   }}
                 />
               </div>
@@ -385,11 +299,6 @@ function DeviceTooltip({
 // ---------------------------------------------------------------------------
 // Étiquette DOM au-dessus du modèle 3D (ID + état), glissable
 // ---------------------------------------------------------------------------
-const LABEL_DOT: Record<string, string> = {
-  ok: "#30D158", batterie_faible: "#FFD60A", hors_ligne: "#474747",
-  figé: "#FF5A1F", dérive: "#FF5A1F", aberrant: "#E0260E",
-}
-
 function DeviceLabel({ device, node, onClick }: {
   device: WorldDevice
   node?: FireNode
@@ -401,7 +310,7 @@ function DeviceLabel({ device, node, onClick }: {
   return (
     <div
       onClick={onClick}
-      title={`${DEVICE_LABELS[device.kind] ?? device.kind} ${device.id} · ${FAULT_LABEL[state] ?? state}`}
+      title={`${kindMeta(device.kind).label} ${device.id} · ${healthLabel(state)}`}
       className="flex items-center gap-1 select-none cursor-grab active:cursor-grabbing"
       style={{
         padding: "2px 6px 2px 5px",
@@ -414,7 +323,7 @@ function DeviceLabel({ device, node, onClick }: {
         whiteSpace: "nowrap",
       }}
     >
-      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: LABEL_DOT[state] ?? "#474747" }} />
+      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: healthColor(state) }} />
       <span className="text-[9px] font-mono font-semibold tabular" style={{ color: "rgba(255,255,255,0.88)", letterSpacing: "0.02em" }}>
         {device.id}
       </span>
@@ -432,13 +341,16 @@ interface Props {
   sendCommand: (type: string, payload?: Record<string, unknown>) => void
   /** false quand une page couvre la carte : animations suspendues */
   active?: boolean
+  /** « Voir sur la carte » : vol vers un appareil (key change à chaque demande) */
+  focus?: { lat: number; lon: number; key: number } | null
 }
 
-export function FireMap({ state, world, alertLevel, sendCommand, active = true }: Props) {
+export function FireMap({ state, world, alertLevel, sendCommand, active = true, focus = null }: Props) {
   const mapRef        = useRef<MapRef>(null)
   const containerRef  = useRef<HTMLDivElement>(null)
   const is3DRef       = useRef(true)
   const markersRef    = useRef(new Map<string, MarkerInstance>())
+  const compassRef    = useRef<HTMLSpanElement>(null)
   const offsetsRef    = useRef(new Map<string, number>())
 
   const quality       = useEffectsQuality()
@@ -447,18 +359,17 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
   const [fps, setFps] = useState<number | null>(null)
 
   // Calque three.js + sol drapé : créés une fois, réinstallés à chaque changement de style
-  const fxRef = useRef<FireFxLayer | null>(null)
-  if (!fxRef.current) {
-    fxRef.current = new FireFxLayer(quality, {
+  const [fx] = useState(() => new FireFxLayer(quality))
+  const [ground] = useState(() => new GroundOverlay())
+  useEffect(() => {
+    fx.setCallbacks({
       onLabelOffsets: (offsets) => {
         offsetsRef.current = offsets
         for (const [id, px] of offsets) markersRef.current.get(id)?.setOffset([0, -Math.round(px) - 4])
       },
       onFps: (v) => setFps(v),
     })
-  }
-  const groundRef = useRef<GroundOverlay | null>(null)
-  if (!groundRef.current) groundRef.current = new GroundOverlay()
+  }, [fx])
 
   const [basemap, setBasemap]     = useState<Basemap>("satellite")
   const [pressedBtn, setPressedBtn] = useState<string | null>(null)
@@ -476,7 +387,7 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
     device: WorldDevice; node?: FireNode; x: number; y: number
   } | null>(null)
   // Déplacements en attente de l'écho du simulateur (glisser-déposer optimiste)
-  const [moves, setMoves] = useState<Record<string, { lon: number; lat: number; until: number }>>({})
+  const [moves, setMoves] = useState<Record<string, { lon: number; lat: number }>>({})
   const [drag, setDrag] = useState<{ id: string; lon: number; lat: number } | null>(null)
 
   const prevConfirmedRef = useRef(false)
@@ -501,15 +412,15 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
     // isStyleLoaded() reste faux tant que des tuiles chargent : on tente, le style
     // lève une exception s'il n'est pas encore analysé (prochain styledata)
     try {
-      groundRef.current?.attach(map, "gateways-fill")
-      if (!map.getLayer(FX_LAYER_ID) && fxRef.current) map.addLayer(fxRef.current)
+      ground.attach(map, "gateways-fill")
+      if (!map.getLayer(FX_LAYER_ID)) map.addLayer(fx)
       const order = map.getLayersOrder()
       const gi = order.indexOf(GROUND_LAYER)
       const bi = order.indexOf("gateways-fill")
       if (gi >= 0 && bi >= 0 && gi > bi) map.moveLayer(GROUND_LAYER, "gateways-fill")
       if (order.length && order[order.length - 1] !== FX_LAYER_ID && map.getLayer(FX_LAYER_ID)) map.moveLayer(FX_LAYER_ID)
     } catch { /* style en cours de chargement */ }
-  }, [])
+  }, [fx, ground])
 
   // -------------------------------------------------------------------------
   // Chargement initial + listener style.load persistant
@@ -521,8 +432,6 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
     setMapLoaded(true)
     applyTerrain(map, is3DRef.current)
     ensureFxLayers(map)
-    // Diagnostic (développement uniquement) : mesures de performance depuis la console
-    if (import.meta.env.DEV) (window as unknown as { __fw: unknown }).__fw = { map, fx: fxRef.current }
 
     // Réappliquer le terrain et les calques à chaque changement de fond de carte
     map.on("style.load", () => {
@@ -543,21 +452,21 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
   // Données → calque 3D (aucune animation sans donnée du monde)
   // -------------------------------------------------------------------------
   useEffect(() => {
-    fxRef.current?.setWorld(world)
-    groundRef.current?.update(world)
+    fx.setWorld(world)
+    ground.update(world)
     const map = mapRef.current?.getMap() as MapLibreMap | undefined
     if (map) ensureFxLayers(map)
-  }, [world, ensureFxLayers])
-  useEffect(() => { fxRef.current?.setNodes(state.nodes) }, [state.nodes])
-  useEffect(() => { fxRef.current?.setWeather(state.weather) }, [state.weather])
+  }, [world, ensureFxLayers, fx, ground])
+  useEffect(() => { fx.setNodes(state.nodes) }, [fx, state.nodes])
+  useEffect(() => { fx.setWeather(state.weather) }, [fx, state.weather])
   useEffect(() => {
-    fxRef.current?.setTruthVisible(showTruth)
-    groundRef.current?.setVisible(showTruth)
-  }, [showTruth])
-  useEffect(() => { fxRef.current?.setQuality(quality) }, [quality])
-  useEffect(() => { fxRef.current?.setReducedMotion(reducedMotion) }, [reducedMotion])
-  useEffect(() => { fxRef.current?.setActive(active) }, [active])
-  useEffect(() => () => groundRef.current?.detach(), [])
+    fx.setTruthVisible(showTruth)
+    ground.setVisible(showTruth)
+  }, [fx, ground, showTruth])
+  useEffect(() => { fx.setQuality(quality) }, [fx, quality])
+  useEffect(() => { fx.setReducedMotion(reducedMotion) }, [fx, reducedMotion])
+  useEffect(() => { fx.setActive(active) }, [fx, active])
+  useEffect(() => () => ground.detach(), [ground])
 
   // -------------------------------------------------------------------------
   // 2D / 3D toggle — animation 1,2 s, désactive le terrain en 2D
@@ -575,6 +484,35 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
       : { pitch: 0,  bearing: 0,   duration }
     )
   }, [applyTerrain, reducedMotion])
+
+  // -------------------------------------------------------------------------
+  // Boussole : suit le cap de la carte sans re-rendu React
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (!mapLoaded) return
+    const map = mapRef.current?.getMap() as MapLibreMap | undefined
+    if (!map) return
+    const onRotate = () => {
+      if (compassRef.current) compassRef.current.style.transform = `rotate(${-map.getBearing()}deg)`
+    }
+    onRotate()
+    map.on("rotate", onRotate)
+    return () => { map.off("rotate", onRotate) }
+  }, [mapLoaded])
+
+  // -------------------------------------------------------------------------
+  // « Voir sur la carte » depuis la page Appareils
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (!focus || !mapLoaded) return
+    mapRef.current?.flyTo({
+      center: [focus.lon, focus.lat],
+      zoom: 15.2,
+      pitch: is3DRef.current ? 62 : 0,
+      duration: reducedMotion ? 0 : 1800,
+      essential: true,
+    })
+  }, [focus, mapLoaded, reducedMotion])
 
   // -------------------------------------------------------------------------
   // flyTo cinématique à la confirmation du feu
@@ -658,11 +596,10 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
 
   // Appareils affichés : positions glissées en attente de confirmation
   const worldDevices = useMemo(() => {
-    const now = Date.now()
     return (world?.devices ?? []).map((d) => {
       if (drag?.id === d.id) return { ...d, lon: drag.lon, lat: drag.lat }
       const mv = moves[d.id]
-      if (!mv || now > mv.until) return d
+      if (!mv) return d
       const confirmed = Math.abs(mv.lon - d.lon) < 2e-5 && Math.abs(mv.lat - d.lat) < 2e-5
       return confirmed ? d : { ...d, lon: mv.lon, lat: mv.lat }
     })
@@ -722,22 +659,20 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
         onLoad={handleMapLoad}
         onDblClick={handleDblClick}
       >
-        <NavigationControl position="top-right" visualizePitch />
-
         {/* ── Couverture passerelles ── */}
         <Source id="gateways" type="geojson" data={gatewayGJ}>
           <Layer id="gateways-fill" type="fill"
-            paint={{ "fill-color": "#10b981", "fill-opacity": 0.07 }} />
+            paint={{ "fill-color": "#FF5A1F", "fill-opacity": 0.018 }} />
           <Layer id="gateways-outline" type="line"
-            paint={{ "line-color": "#10b981", "line-opacity": 0.4, "line-width": 1, "line-dasharray": [4, 3] }} />
+            paint={{ "line-color": "#FF5A1F", "line-opacity": 0.35, "line-width": 1, "line-dasharray": [4, 3] }} />
         </Source>
 
         {/* ── Cônes caméras thermiques ── */}
         <Source id="cameras" type="geojson" data={cameraGJ}>
           <Layer id="cameras-fill" type="fill"
-            paint={{ "fill-color": "#06b6d4", "fill-opacity": 0.1 }} />
+            paint={{ "fill-color": "#FF5A1F", "fill-opacity": 0.08 }} />
           <Layer id="cameras-outline" type="line"
-            paint={{ "line-color": "#06b6d4", "line-opacity": 0.5, "line-width": 1 }} />
+            paint={{ "line-color": "#FF5A1F", "line-opacity": 0.45, "line-width": 1 }} />
         </Source>
 
         {/* ── Liens radio capteur → passerelle (couleur selon le RSSI) ── */}
@@ -756,13 +691,13 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
           <Layer id="zones-fill" type="fill"
             paint={{
               "fill-color": ["interpolate", ["linear"], ["get", "minutes"],
-                15, "#ef4444", 30, "#f97316", 60, "#fbbf24"],
+                15, "#E0260E", 30, "#FF5A1F", 60, "#6B2510"],
               "fill-opacity": 0.12,
             }} />
           <Layer id="zones-outline" type="line"
             paint={{
               "line-color": ["interpolate", ["linear"], ["get", "minutes"],
-                15, "#ef4444", 30, "#f97316", 60, "#fbbf24"],
+                15, "#E0260E", 30, "#FF5A1F", 60, "#6B2510"],
               "line-width": 1.5,
               "line-dasharray": [4, 3],
             }} />
@@ -771,9 +706,9 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
         {/* ── Cercle d'incertitude du foyer estimé ── */}
         <Source id="uncertainty" type="geojson" data={uncertaintyGJ}>
           <Layer id="uncertainty-fill" type="fill"
-            paint={{ "fill-color": "#ef4444", "fill-opacity": 0.08 }} />
+            paint={{ "fill-color": "#FF5A1F", "fill-opacity": 0.06 }} />
           <Layer id="uncertainty-outline" type="line"
-            paint={{ "line-color": "#ef4444", "line-opacity": 0.5, "line-width": 1.5, "line-dasharray": [3, 2] }} />
+            paint={{ "line-color": "#FF5A1F", "line-opacity": 0.7, "line-width": 1.5, "line-dasharray": [3, 2] }} />
         </Source>
 
         {/* ── Étiquettes des modèles 3D (glissables) ── */}
@@ -794,14 +729,20 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
               anchor="bottom"
               draggable
               onDrag={(e) => {
-                fxRef.current?.moveDevice(device.id, e.lngLat.lng, e.lngLat.lat)
+                fx.moveDevice(device.id, e.lngLat.lng, e.lngLat.lat)
                 setDrag({ id: device.id, lon: e.lngLat.lng, lat: e.lngLat.lat })
               }}
               onDragEnd={(e) => {
                 const { lng, lat } = e.lngLat
-                fxRef.current?.moveDevice(device.id, lng, lat)
+                fx.moveDevice(device.id, lng, lat)
                 setDrag(null)
-                setMoves((m) => ({ ...m, [device.id]: { lon: lng, lat, until: Date.now() + 4000 } }))
+                setMoves((m) => ({ ...m, [device.id]: { lon: lng, lat } }))
+                // sans écho du simulateur sous 4 s, on revient à la position du monde
+                window.setTimeout(() => setMoves((m) => {
+                  const next = { ...m }
+                  delete next[device.id]
+                  return next
+                }), 4000)
                 sendCommand("device_move", { id: device.id, lat, lon: lng })
               }}
             >
@@ -821,26 +762,24 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
         {orphanNodes.map((node) => (
           <Marker key={node.id} latitude={node.lat} longitude={node.lon} anchor="center">
             <div
-              className={`w-2.5 h-2.5 rounded-full border border-black/60 ${node.siren ? "ring-2 ring-red-500 animate-pulse" : ""}`}
-              style={{ backgroundColor: node.online ? "#22c55e" : "#52525b" }}
+              className={`w-2.5 h-2.5 rounded-full border border-black/60 ${node.siren ? "animate-pulse" : ""}`}
+              style={{ backgroundColor: node.online ? C.ok : C.gray }}
               title={`${node.id} · T=${node.readings?.temp?.toFixed(0)}°C smoke=${node.readings?.smoke?.toFixed(0)}ppm`}
             />
           </Marker>
         ))}
 
-        {/* ── Foyer estimé ── */}
+        {/* ── Foyer estimé par le serveur (résultat de la détection) ── */}
         {incident?.position && (
           <Marker latitude={incident.position.lat} longitude={incident.position.lon} anchor="center">
             <div
-              style={{
-                fontSize: "1.5rem",
-                lineHeight: 1,
-                filter: "drop-shadow(0 0 8px #ef4444) drop-shadow(0 0 3px #ff6600)",
-                animation: incident.status === "actif" ? "pulse 0.8s ease-in-out infinite alternate" : "none",
-              }}
-              title="Foyer estimé par le serveur"
+              className="relative w-7 h-7 flex items-center justify-center pointer-events-none"
+              title={`Foyer estimé ±${incident.position.uncertainty_m ?? "?"} m`}
             >
-              🔥
+              <span className="absolute inset-0 rounded-full"
+                style={{ border: `2px solid ${C.fire}`, boxShadow: `0 0 12px ${alpha(C.fire, 0.6)}`,
+                  animation: incident.status === "actif" && !reducedMotion ? "fwFocus 1.4s ease-out infinite" : "none" }} />
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: C.fire }} />
             </div>
           </Marker>
         )}
@@ -866,7 +805,7 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
         className="absolute flex items-center gap-0.5 px-1 py-1"
         style={{
           top: 68, left: "50%", transform: "translateX(-50%)",
-          background: "rgba(28,28,30,0.72)",
+          background: "rgba(14,14,14,0.72)",
           backdropFilter: "blur(20px) saturate(140%)",
           WebkitBackdropFilter: "blur(20px) saturate(140%)",
           border: "1px solid rgba(255,255,255,0.08)",
@@ -903,8 +842,8 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
           title={is3D ? "Vue 2D" : "Vue 3D terrain"}
           className="px-2.5 py-1 text-[10px] rounded-[8px] font-medium flex items-center gap-1"
           style={{
-            background: is3D ? "rgba(100,210,255,0.15)" : "transparent",
-            color: is3D ? "#64d2ff" : "rgba(235,235,245,0.4)",
+            background: is3D ? "rgba(255,255,255,0.14)" : "transparent",
+            color: is3D ? "#ffffff" : "rgba(235,235,245,0.4)",
             transform: pressedBtn === "3d" ? "scale(0.78)" : "scale(1)",
             transition: pressedBtn === "3d"
               ? "transform 55ms ease-in, background 0.15s ease, color 0.15s ease"
@@ -922,8 +861,8 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
           title={showTruth ? "Masquer la vérité terrain (feu, fumée, sol brûlé)" : "Afficher la vérité terrain"}
           className="px-2.5 py-1 text-[10px] rounded-[8px] font-medium flex items-center gap-1"
           style={{
-            background: showTruth ? "rgba(255,90,31,0.15)" : "transparent",
-            color: showTruth ? "#ff9f0a" : "rgba(235,235,245,0.4)",
+            background: showTruth ? alpha(C.fire, 0.16) : "transparent",
+            color: showTruth ? C.fire : "rgba(235,235,245,0.4)",
             transform: pressedBtn === "terrain" ? "scale(0.78)" : "scale(1)",
             transition: pressedBtn === "terrain"
               ? "transform 55ms ease-in, background 0.15s ease, color 0.15s ease"
@@ -935,50 +874,67 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
         </button>
       </div>
 
-      {/* Compteur d'images par seconde (Paramètres → Qualité des effets) */}
-      {showFps && fps !== null && (
-        <div
-          className="absolute bottom-6 left-1/2 translate-x-28 text-[10px] font-mono tabular px-2 py-0.5 rounded-full pointer-events-none"
-          style={{ color: fps >= 50 ? "#ffffff" : "#FF5A1F", background: "rgba(0,0,0,0.55)" }}
-          data-testid="fps"
-        >
-          {fps} FPS
-        </div>
-      )}
-
-      {/* Légende compacte – coin bas droit */}
+      {/* Pilule de contrôles (bas droite, à gauche du panneau d'incident) */}
       <div
-        className="absolute bottom-6 right-4 flex flex-col gap-1 text-[9px] font-mono px-3 py-2.5"
+        className="absolute flex items-center gap-1 pl-3 pr-1 py-1 z-10"
         style={{
-          background: "rgba(18,18,20,0.70)",
-          backdropFilter: "blur(16px)",
-          WebkitBackdropFilter: "blur(16px)",
-          border: "1px solid rgba(255,255,255,0.07)",
-          borderRadius: 10,
+          bottom: 12,
+          right: active ? "min(296px, calc(100vw - 180px))" : 12,
+          maxWidth: "calc(100vw - 24px)",
+          background: "rgba(14,14,14,0.72)",
+          backdropFilter: "blur(20px) saturate(140%)",
+          WebkitBackdropFilter: "blur(20px) saturate(140%)",
+          border: `1px solid ${C.line}`,
+          borderRadius: 999,
+          boxShadow: "0 2px 12px rgba(0,0,0,0.35)",
         }}
+        onClick={(e) => e.stopPropagation()}
       >
-        {[
-          { color: "#30d158", label: "OK" },
-          { color: "#ffd60a", label: "Batterie" },
-          { color: "#0a84ff", label: "Figé" },
-          { color: "#ff3b30", label: "Aberrant" },
-          { color: "#ff9f0a", label: "Dérive" },
-          { color: "#636366", label: "Hors ligne" },
-        ].map(({ color, label }) => (
-          <div key={label} className="flex items-center gap-1.5">
-            <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color }} />
-            <span style={{ color: "rgba(235,235,245,0.4)" }}>{label}</span>
-          </div>
-        ))}
+        <div className="hidden lg:flex items-center gap-2.5 pr-2 text-[9px]" style={{ color: C.text3 }}>
+          {[
+            { color: C.ok, label: "OK" },
+            { color: C.low, label: "Batterie" },
+            { color: C.fire, label: "Figé/Dérive" },
+            { color: C.red, label: "Aberrant" },
+            { color: C.gray, label: "Hors ligne" },
+          ].map(({ color, label }) => (
+            <span key={label} className="flex items-center gap-1 whitespace-nowrap">
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: color }} />{label}
+            </span>
+          ))}
+        </div>
+        {showFps && fps !== null && (
+          <span className="px-2 text-[10px] font-mono tabular whitespace-nowrap" data-testid="fps"
+            style={{ color: fps >= 50 ? C.text : C.fire, borderLeft: `1px solid ${C.line}` }}>
+            {fps} FPS
+          </span>
+        )}
+        <div className="flex items-center" style={{ borderLeft: `1px solid ${C.line}`, paddingLeft: 4 }}>
+          <button onClick={() => mapRef.current?.zoomOut()} title="Dézoomer" aria-label="Dézoomer"
+            className="w-8 h-8 flex items-center justify-center rounded-full spring-hover" style={{ color: C.text2 }}>
+            <Minus className="w-4 h-4" />
+          </button>
+          <button onClick={() => mapRef.current?.zoomIn()} title="Zoomer" aria-label="Zoomer"
+            className="w-8 h-8 flex items-center justify-center rounded-full spring-hover" style={{ color: C.text2 }}>
+            <Plus className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => mapRef.current?.easeTo({ bearing: 0, duration: reducedMotion ? 0 : 600 })}
+            title="Boussole : remettre le nord en haut" aria-label="Nord en haut"
+            className="w-8 h-8 flex items-center justify-center rounded-full spring-hover"
+            style={{ background: C.fill }}
+          >
+            <span ref={compassRef} className="flex items-center justify-center" style={{ transform: "rotate(30deg)" }}>
+              <Navigation className="w-4 h-4" style={{ color: C.fire, fill: alpha(C.fire, 0.35) }} />
+            </span>
+          </button>
+        </div>
       </div>
 
-      {/* Hint bas de carte */}
+      {/* Aide bas de carte */}
       <div
-        className="absolute bottom-6 left-1/2 -translate-x-1/2 text-[10px] select-none pointer-events-none px-3 py-1 rounded-full"
-        style={{
-          color: "rgba(235,235,245,0.25)",
-          background: "rgba(0,0,0,0.30)",
-        }}
+        className="absolute text-[10px] select-none pointer-events-none px-3 py-1 rounded-full hidden xl:block"
+        style={{ bottom: 18, left: active ? "calc(var(--dock-space) + 202px)" : "calc(var(--dock-space) + 12px)", color: C.text4, background: "rgba(0,0,0,0.35)" }}
       >
         Glisser un appareil · Double-clic = feu
       </div>
@@ -988,6 +944,10 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true }
 
 /* Animation d'entrée du tooltip */
 const _tooltipKeyframe = `
+@keyframes fwFocus {
+  from { transform: scale(0.7); opacity: 1; }
+  to   { transform: scale(1.9); opacity: 0; }
+}
 @keyframes tooltipIn {
   from { opacity: 0; transform: scale(0.90) translateY(6px); }
   to   { opacity: 1; transform: scale(1)    translateY(0);   }

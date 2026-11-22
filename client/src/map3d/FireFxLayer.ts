@@ -166,6 +166,12 @@ export class FireFxLayer implements CustomLayerInterface {
     }
   }
 
+  /** Rappels vers l'interface (étiquettes, FPS) : branchés après le montage. */
+  setCallbacks(cb: FxCallbacks) {
+    this.callbacks = cb
+    this.lastOffsets = new Map()
+  }
+
   setReducedMotion(v: boolean) {
     this.reduced = v
   }

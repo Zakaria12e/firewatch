@@ -13,21 +13,33 @@ import { SettingsPage } from "@/pages/SettingsPage"
 import { useFireWatch } from "@/hooks/useFireWatch"
 import type { ReactNode } from "react"
 
+/**
+ * Page secondaire : grand panneau en verre à droite du dock (marge gauche =
+ * dock + 16 px), le dock reste visible ; le contenu défile à l'intérieur.
+ */
 function PagePane({ children, pageKey }: { children: ReactNode; pageKey: string }) {
   return (
     <div
       key={pageKey}
-      className="glass-solid anim-scale fixed top-16 bottom-3 z-20 overflow-hidden flex flex-col"
-      style={{ left: 72, right: 12, borderRadius: 18 }}
+      className="glass-solid anim-scale fixed z-20 overflow-hidden flex flex-col"
+      style={{ left: "var(--dock-space)", right: 12, top: 64, bottom: 12, borderRadius: 18 }}
     >
       {children}
     </div>
   )
 }
 
+const setWeatherMode = (mode: string, preset?: string) =>
+  fetch("/api/weather/mode", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(preset ? { mode, preset } : { mode }),
+  })
+
 export default function App() {
   const { state, world, alertLevel, metrics, sendCommand } = useFireWatch()
   const [page, setPage] = useState<Page>("ops")
+  const [focus, setFocus] = useState<{ lat: number; lon: number; key: number } | null>(null)
 
   const handleToggleSiren = () => {
     const on = state.sirenOverride === true ? null : true
@@ -36,6 +48,11 @@ export default function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ on }),
     })
+  }
+
+  const applyPreset = (preset: string) => {
+    setWeatherMode("manuel", preset)
+    sendCommand("preset", { name: preset })
   }
 
   return (
@@ -47,6 +64,7 @@ export default function App() {
         alertLevel={alertLevel}
         sendCommand={sendCommand}
         active={page === "ops"}
+        focus={focus}
       />
 
       {/* Chrome flottant */}
@@ -63,21 +81,8 @@ export default function App() {
         <>
           <DevicePalette
             weatherMode={state.weatherMode}
-            onWeatherModeChange={(mode) => {
-              fetch("/api/weather/mode", {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ mode }),
-              })
-            }}
-            onWeatherPreset={(preset) => {
-              fetch("/api/weather/mode", {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ mode: "manuel", preset }),
-              })
-              sendCommand("preset", { name: preset })
-            }}
+            onWeatherModeChange={(mode) => setWeatherMode(mode)}
+            onWeatherPreset={applyPreset}
           />
           <IncidentPanel
             incident={state.incident}
@@ -87,9 +92,19 @@ export default function App() {
         </>
       )}
 
-      {/* Pages secondaires : panneau verre opaque sur la carte */}
+      {/* Pages secondaires */}
       {page === "devices" && (
-        <PagePane pageKey="devices"><DevicesPage nodes={state.nodes} sendCommand={sendCommand} /></PagePane>
+        <PagePane pageKey="devices">
+          <DevicesPage
+            nodes={state.nodes}
+            devices={world?.devices ?? []}
+            sendCommand={sendCommand}
+            onLocate={(lat, lon) => {
+              setPage("ops")
+              setFocus({ lat, lon, key: Date.now() })
+            }}
+          />
+        </PagePane>
       )}
       {page === "perf" && (
         <PagePane pageKey="perf"><PerformancePage metrics={metrics} /></PagePane>
@@ -101,10 +116,16 @@ export default function App() {
         <PagePane pageKey="incidents"><IncidentsPage /></PagePane>
       )}
       {page === "settings" && (
-        <PagePane pageKey="settings"><SettingsPage /></PagePane>
+        <PagePane pageKey="settings">
+          <SettingsPage
+            weatherMode={state.weatherMode}
+            onWeatherModeChange={(mode) => setWeatherMode(mode)}
+            onWeatherPreset={applyPreset}
+          />
+        </PagePane>
       )}
 
-      <Toaster richColors position="bottom-right" />
+      <Toaster position="top-center" offset={64} />
     </div>
   )
 }
