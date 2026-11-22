@@ -20,7 +20,8 @@ class Device:
     """
     Appareil IoT virtuel.
     Sous-classé par type (station, temp, smoke, co, flame, thermal, wind,
-    fuel, rain, siren, gateway).
+    fuel, rain, siren, gateway). La radio (RSSI, SNR, SF, passerelle) est
+    calculée par engine/radio.py au moment de l'émission.
     """
 
     kind = "device"   # surcharge dans les sous-classes
@@ -40,59 +41,16 @@ class Device:
         self._rng = random.Random()
 
     # ------------------------------------------------------------------
-    # Radio simulée (LoRaWAN simplifié)
+    # Pannes
     # ------------------------------------------------------------------
-    def rssi_snr(self, gateways, elev_fn):
-        """
-        Calcule RSSI (dBm) et SNR (dB) vers la passerelle la plus proche.
-        Perte en log-distance : PL = PL0 + 10·n·log10(d/d0).
-        Atténuation supplémentaire si relief bloque la ligne de vue.
-        """
-        if not gateways:
-            return -120.0, -20.0
-        best_rssi = -200.0
-        best_snr  = -30.0
-        for gw in gateways:
-            dist = _dist_m(self.lat, self.lon, gw["lat"], gw["lon"])
-            dist = max(dist, 1.0)
-            pl0 = 128.0           # perte à 1 m (EU868, 125 kHz SF7)
-            n   = 2.8             # exposant de path-loss en forêt
-            pl  = pl0 + 10 * n * math.log10(dist)
-            # Pénalité relief (heuristique : pas de calcul Fresnel complet)
-            penalty = 0.0
-            if elev_fn:
-                try:
-                    h_dev = elev_fn(self.lat, self.lon)
-                    h_gw  = elev_fn(gw["lat"], gw["lon"])
-                    h_mid = elev_fn((self.lat + gw["lat"]) / 2,
-                                    (self.lon + gw["lon"]) / 2)
-                    los_mid = (h_dev + h_gw) / 2
-                    if h_mid > los_mid + 20:
-                        penalty = min(40.0, (h_mid - los_mid) * 0.3)
-                except Exception:
-                    pass
-            rssi = -pl - penalty + self._rng.gauss(0, 2.0)
-            snr  = max(-20.0, rssi + 100 + self._rng.gauss(0, 1.5))
-            if rssi > best_rssi:
-                best_rssi = rssi
-                best_snr  = snr
-        return round(best_rssi, 1), round(best_snr, 1)
-
-    def sf_from_snr(self, snr):
-        """ADR simplifié : choisit le SF selon le SNR (meilleur signal = SF bas = airtime court)."""
-        if snr > 7:   return 7
-        if snr > 2:   return 8
-        if snr > -2:  return 9
-        if snr > -7:  return 10
-        if snr > -12: return 11
-        return 12
-
-    def packet_loss(self, snr):
-        """Probabilité de perte du paquet selon le SNR."""
-        if snr > -5:  return 0.0
-        if snr > -12: return 0.1
-        if snr > -17: return 0.4
-        return 0.9
+    def set_fault(self, mode):
+        """Change le mode de panne ; remet à zéro les états liés à l'ancien mode."""
+        if mode == self.fault:
+            return
+        self._stuck_readings = None
+        if self.fault == "battery" and mode == "ok":
+            self.battery = max(self.battery, 60.0)   # batterie remplacée
+        self.fault = mode
 
     # ------------------------------------------------------------------
     # Consommation batterie
@@ -131,8 +89,11 @@ class Device:
                 if isinstance(readings[k], float):
                     readings[k] += self._seq * self._rng.gauss(0, 0.1)
         if self.fault == "spike" and self._rng.random() < 0.1:
-            k = self._rng.choice([k for k in readings if isinstance(readings[k], (int, float))])
-            readings[k] = readings[k] * self._rng.uniform(5, 20)
+            keys = [k for k in readings
+                    if isinstance(readings[k], (int, float)) and not isinstance(readings[k], bool)]
+            if keys:
+                k = self._rng.choice(keys)
+                readings[k] = readings[k] * self._rng.uniform(5, 20)
         if self.fault == "noisy":
             for k in readings:
                 if isinstance(readings[k], float):
@@ -142,18 +103,25 @@ class Device:
     # ------------------------------------------------------------------
     # Construction du paquet SenML
     # ------------------------------------------------------------------
-    def build_senml(self, readings, rssi, snr, sf):
+    def build_senml(self, readings, radio=None):
+        """
+        Paquet SenML à labels entiers.
+        radio = (rssi, snr, sf) pour un uplink LoRa, None pour une liaison filaire
+        (passerelle : backhaul Ethernet/4G).
+        """
         self._seq += 1
         pack = [
             {BN: "urn:dev:fw:{}:".format(self.id), BT: int(time.time()),
              N: "lat", U: "lat", V: round(self.lat, 6)},
             {N: "lon", U: "lon", V: round(self.lon, 6)},
             {N: "bat", U: "%EL", V: round(self.battery, 1)},
-            {N: "rssi", U: "dBm", V: rssi},
-            {N: "snr",  U: "dB",  V: snr},
-            {N: "sf",   U: "1",   V: sf},
-            {N: "seq",  U: "1",   V: self._seq},
         ]
+        if radio is not None:
+            rssi, snr, sf = radio
+            pack.append({N: "rssi", U: "dBm", V: rssi})
+            pack.append({N: "snr",  U: "dB",  V: snr})
+            pack.append({N: "sf",   U: "1",   V: sf})
+        pack.append({N: "seq", U: "1", V: self._seq})
         for key, val in readings.items():
             if isinstance(val, bool):
                 pack.append({N: key, VB: val})
@@ -171,6 +139,7 @@ class Device:
             "lon": self.lon,
             "azimuth": self.azimuth,
             "fault": self.fault,
+            "siren": bool(self.siren),
         }
 
 
@@ -181,3 +150,10 @@ def _dist_m(lat1, lon1, lat2, lon2):
     dlat = (lat2 - lat1) * 111_320
     dlon = (lon2 - lon1) * 111_320 * math.cos(math.radians((lat1 + lat2) / 2))
     return math.hypot(dlat, dlon)
+
+
+def bearing_deg(lat1, lon1, lat2, lon2):
+    """Relèvement (0° = nord, sens horaire) de (lat1, lon1) vers (lat2, lon2)."""
+    dlat = (lat2 - lat1) * 111_320
+    dlon = (lon2 - lon1) * 111_320 * math.cos(math.radians((lat1 + lat2) / 2))
+    return (math.degrees(math.atan2(dlon, dlat)) + 360.0) % 360.0

@@ -1,5 +1,6 @@
 import { config } from "./config.js"
 import { compass } from "./geo.js"
+import { getSettings } from "./settings.js"
 
 export function buildMessage(incident) {
   const dir = compass(incident.heading)
@@ -50,9 +51,16 @@ async function sendPushover({ title, message }) {
   return res.ok ? "pushover" : null
 }
 
-/** Envoie l'alerte sur tous les canaux configurés, retourne ceux qui ont réussi. */
+/**
+ * Envoie l'alerte sur les canaux configurés (.env) et activés (page Paramètres),
+ * retourne ceux qui ont réussi.
+ */
 export async function notify(payload) {
-  const results = await Promise.allSettled([sendNtfy(payload), sendPushover(payload)])
+  const { ntfyEnabled = true, pushoverEnabled = true } = getSettings().alerts || {}
+  const results = await Promise.allSettled([
+    ntfyEnabled ? sendNtfy(payload) : null,
+    pushoverEnabled ? sendPushover(payload) : null,
+  ])
   const sent = results.filter((r) => r.status === "fulfilled" && r.value).map((r) => r.value)
   results
     .filter((r) => r.status === "rejected")

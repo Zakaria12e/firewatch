@@ -13,15 +13,40 @@ const state = {
   scenarios: [],           // résultats banc d'essai (ajoutés par --bench)
 }
 
+// Compteurs SenML `seq` par appareil : PDR = reçus / émis (trous de séquence = pertes radio)
+const seqById = new Map()   // id -> { first, last, received }
+
 /**
  * Enregistre un paquet CoAP reçu.
  * @param {number} cborLen  taille du payload CBOR en octets
  * @param {number} jsonLen  taille JSON équivalente calculée côté appelant
+ * @param {{id: string, seq?: number}} [meta]  compteur de trame de l'appareil
  */
-export function recordPacket(cborLen, jsonLen) {
+export function recordPacket(cborLen, jsonLen, meta = undefined) {
   state.packetsReceived++
   state.cborBytesTotal += cborLen
   state.jsonBytesTotal += jsonLen
+  if (meta?.id && Number.isFinite(meta.seq)) {
+    const s = seqById.get(meta.id)
+    if (!s || meta.seq <= s.last - 1000 || meta.seq < s.first) {
+      // Nouvel appareil ou compteur remis à zéro (simulateur redémarré)
+      seqById.set(meta.id, { first: meta.seq, last: meta.seq, received: 1 })
+    } else if (meta.seq > s.last) {
+      s.last = meta.seq
+      s.received++
+    }
+  }
+}
+
+/** PDR (%) estimé à partir des numéros de séquence ; null si aucune donnée. */
+function packetDeliveryRatio() {
+  let received = 0
+  let expected = 0
+  for (const s of seqById.values()) {
+    received += s.received
+    expected += s.last - s.first + 1
+  }
+  return expected > 0 ? Math.round((received / expected) * 1000) / 10 : null
 }
 
 /**
@@ -72,6 +97,7 @@ export function resetMetrics() {
   state.falseAlertsAvoided = 0
   state.detectionEvents = []
   state._currentFire = null
+  seqById.clear()
   // On garde state.scenarios (résultats cumulatifs du banc)
 }
 
@@ -111,7 +137,7 @@ export function getMetrics(nodes) {
     },
     network: {
       packetsReceived: state.packetsReceived,
-      pdr: 100,   // PDR calculé hors simulateur pour l'instant (voir metrics §7)
+      pdr: packetDeliveryRatio() ?? 100,   // trous de séquence SenML = paquets perdus
     },
     data: {
       cborBytes: cbor,

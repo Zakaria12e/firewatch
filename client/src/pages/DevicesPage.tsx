@@ -122,7 +122,7 @@ export function DevicesPage({ nodes, sendCommand }: Props) {
   const [selected, setSelected]         = useState<string | null>(null)
 
   const statuses: NodeFault[] = ["ok", "batterie_faible", "figé", "aberrant", "dérive", "hors_ligne"]
-  const filtered = filterStatus === "all" ? nodes : nodes.filter((n) => n.status === filterStatus)
+  const filtered = filterStatus === "all" ? nodes : nodes.filter((n) => (n.health ?? "ok") === filterStatus)
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -150,7 +150,7 @@ export function DevicesPage({ nodes, sendCommand }: Props) {
             Tous <span style={{ opacity: 0.5 }}>({nodes.length})</span>
           </button>
           {statuses.map((s) => {
-            const count = nodes.filter((n) => n.status === s).length
+            const count = nodes.filter((n) => (n.health ?? "ok") === s).length
             if (count === 0) return null
             const active = filterStatus === s
             return (
@@ -209,9 +209,9 @@ export function DevicesPage({ nodes, sendCommand }: Props) {
                     </td>
                     <td className="px-3 py-2">
                       <span className="flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: STATUS_COLOR[node.status] }} />
-                        <span className="text-[10px] font-medium" style={{ color: STATUS_COLOR[node.status] }}>
-                          {STATUS_LABEL[node.status]}
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: STATUS_COLOR[node.health ?? "ok"] }} />
+                        <span className="text-[10px] font-medium" style={{ color: STATUS_COLOR[node.health ?? "ok"] }}>
+                          {STATUS_LABEL[node.health ?? "ok"]}
                         </span>
                       </span>
                     </td>

@@ -12,6 +12,11 @@ Propagation (8-voisins) à chaque pas de temps :
   p = BASE · dt · density · dryness · exp(k_v · v · cos θ) · exp(k_p · slope)
   - θ   : angle entre le voisin et la direction vers laquelle souffle le vent
   - slope : pente en degrés (positif = montée = faveur le feu)
+
+Chaque cellule en feu appartient à un foyer (`owner`) : une cellule allumée par
+propagation hérite du foyer de la cellule source ; une saute de feu crée un
+nouveau foyer. Un foyer reste actif tant qu'il lui reste au moins une cellule
+en feu (et pas seulement sa cellule d'allumage).
 """
 from __future__ import annotations
 
@@ -33,7 +38,22 @@ SPOT_MIN_M = 100.0
 SPOT_MAX_M = 400.0
 SPOT_PROB  = 0.00008   # par cellule en feu et par seconde simulée
 
+MAX_SPOT_EVENTS = 50   # tampon d'événements entre deux snapshots
+
 NEIGHBORS_8 = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+
+def burn_profile(remaining):
+    """
+    Profil d'intensité d'une cellule selon son âge (0 → 1) :
+    montée rapide, plateau, puis déclin vers les braises.
+    """
+    age = 1.0 - max(0.0, min(1.0, remaining / BURN_TIME))
+    if age < 0.12:
+        return 0.35 + 0.65 * age / 0.12
+    if age < 0.55:
+        return 1.0
+    return 1.0 - 0.75 * (age - 0.55) / 0.45
 
 
 class FireModel:
@@ -46,6 +66,7 @@ class FireModel:
       ('X', None)                   – burnt
       ('W', float)                  – wet, temps de séchage restant
       ('R', None)                   – rock / non combustible
+    owner[r][c] : id du foyer de la cellule (en feu ou calcinée), sinon None
     """
 
     def __init__(self, forest):
@@ -54,35 +75,57 @@ class FireModel:
         self._cols = COLS
         self._cell_m = CELL_M
         self._forest = forest
-        # Initialiser la grille depuis la densité de combustible
         self.grid = []
-        for r in range(ROWS):
+        self.owner = []
+        self._init_grid()
+        self.fires = {}      # id → {id, start, startEpochMs, origin, parent, cells:[{r,c}]}
+        self._fire_id_counter = 0
+        self._spot_counter = 0
+        self._spot_events = []   # sautes de feu depuis le dernier snapshot
+        self._burning = []       # cache des cellules en feu [(r, c)]
+        self._rng = random.Random()
+
+    def _init_grid(self):
+        self.grid = []
+        self.owner = []
+        for r in range(self._rows):
             row = []
-            for c in range(COLS):
-                if forest.fuel[r][c] < 0.05:
+            for c in range(self._cols):
+                if self._forest.fuel[r][c] < 0.05:
                     row.append(('R', None))
                 else:
                     row.append(('F', None))
             self.grid.append(row)
-        self.fires = {}      # id → {id, start_time, cells:[{r,c}]}
-        self._fire_id_counter = 0
-        self._rng = random.Random()
+            self.owner.append([None] * self._cols)
 
     # ------------------------------------------------------------------
     # API publique
     # ------------------------------------------------------------------
+    def _new_fire(self, r, c, parent=None):
+        fid = "F{:03d}".format(self._fire_id_counter)
+        self._fire_id_counter += 1
+        now = time.time()
+        self.fires[fid] = {
+            "id": fid,
+            "start": now,
+            "startEpochMs": int(now * 1000),
+            "origin": {"r": r, "c": c},
+            "parent": parent,
+            "cells": [{"r": r, "c": c}],
+        }
+        self.grid[r][c] = ('B', BURN_TIME)
+        self.owner[r][c] = fid
+        return fid
+
     def ignite(self, r, c):
-        """Allume une cellule (si brûlable). Retourne True si réussi."""
+        """Allume une cellule (si brûlable) et crée un foyer. Retourne True si réussi."""
         if not (0 <= r < self._rows and 0 <= c < self._cols):
             return False
         state, _ = self.grid[r][c]
         if state not in ('F', 'W'):
             return False
-        self.grid[r][c] = ('B', BURN_TIME)
-        fid = "F{:03d}".format(self._fire_id_counter)
-        self._fire_id_counter += 1
-        now = time.time()
-        self.fires[fid] = {"id": fid, "start": now, "startEpochMs": int(now * 1000), "cells": [{"r": r, "c": c}]}
+        self._new_fire(r, c)
+        self._rebuild_cache()
         return True
 
     def extinguish(self, r, c, radius_m):
@@ -98,29 +141,23 @@ class FireModel:
                 state, _ = self.grid[nr][nc]
                 if state in ('B', 'F'):
                     self.grid[nr][nc] = ('W', DRY_TIME)
+                    self.owner[nr][nc] = None
+        self._rebuild_cache()
+        self._refresh_fires()
 
     def reset(self):
         """Réinitialise toutes les cellules à leur état initial."""
         self.fires.clear()
-        for r in range(self._rows):
-            for c in range(self._cols):
-                if self._forest.fuel[r][c] < 0.05:
-                    self.grid[r][c] = ('R', None)
-                else:
-                    self.grid[r][c] = ('F', None)
+        self._spot_events = []
+        self._init_grid()
+        self._burning = []
 
     def burning_cells(self):
-        """Liste de (r, c) actuellement en feu."""
-        result = []
-        for r in range(self._rows):
-            for c in range(self._cols):
-                if self.grid[r][c][0] == 'B':
-                    result.append((r, c))
-        return result
+        """Liste de (r, c) actuellement en feu (cache mis à jour à chaque pas)."""
+        return list(self._burning)
 
     def active_fire_count(self):
-        return sum(1 for r in range(self._rows) for c in range(self._cols)
-                   if self.grid[r][c][0] == 'B')
+        return len(self._burning)
 
     # ------------------------------------------------------------------
     # Pas de simulation
@@ -142,7 +179,7 @@ class FireModel:
         dryness = max(0.2, (60 - hum) / 40) * max(0.3, (40 - fmc) / 40)
 
         # 1. Collecter les cellules en feu et celles qui peuvent brûler
-        to_ignite = {}   # (r,c) → proba cumulée (on appliquera une fois à la fin)
+        to_ignite = {}   # (r,c) → [proba cumulée, foyer, meilleure proba]
         to_expire = []
         to_dry   = []
 
@@ -156,6 +193,7 @@ class FireModel:
                         to_expire.append((r, c))
                     else:
                         self.grid[r][c] = ('B', new_time)
+                        fid = self.owner[r][c]
                         # Propagation aux 8 voisins
                         for dr, dc in NEIGHBORS_8:
                             nr, nc = r + dr, c + dc
@@ -167,8 +205,9 @@ class FireModel:
                             neighbor_density = self._forest.fuel[nr][nc]
                             slope = self._forest.slope_between(r, c, nr, nc)
                             # Angle entre voisin et direction du vent (vecteur)
-                            vec_n = (nr - r) / math.sqrt(dr * dr + dc * dc)
-                            vec_e = (nc - c) / math.sqrt(dr * dr + dc * dc)
+                            norm = math.sqrt(dr * dr + dc * dc)
+                            vec_n = -dr / norm          # ligne croissante = vers le sud
+                            vec_e = dc / norm
                             cos_theta = vec_n * wind_to_n + vec_e * wind_to_e
                             p = (BASE_PROB * dt_sim * neighbor_density * dryness
                                  * math.exp(K_WIND * wind_speed * cos_theta)
@@ -176,8 +215,14 @@ class FireModel:
                             p = min(0.95, p)
                             key = (nr, nc)
                             # On accumule : p_total = 1 - (1-p1)(1-p2)…
-                            prev = to_ignite.get(key, 0.0)
-                            to_ignite[key] = 1.0 - (1.0 - prev) * (1.0 - p)
+                            entry = to_ignite.get(key)
+                            if entry is None:
+                                to_ignite[key] = [p, fid, p]
+                            else:
+                                entry[0] = 1.0 - (1.0 - entry[0]) * (1.0 - p)
+                                if p > entry[2]:
+                                    entry[1] = fid
+                                    entry[2] = p
 
                 elif state == 'W':
                     new_dry = val - dt_sim
@@ -186,12 +231,13 @@ class FireModel:
                     else:
                         self.grid[r][c] = ('W', new_dry)
 
-        # 2. Appliquer les allumages
-        for (r, c), p in to_ignite.items():
+        # 2. Appliquer les allumages (la cellule hérite du foyer source)
+        for (r, c), (p, fid, _) in to_ignite.items():
             if self._rng.random() < p:
                 self.grid[r][c] = ('B', BURN_TIME)
+                self.owner[r][c] = fid
 
-        # 3. Fin de combustion → calciné
+        # 3. Fin de combustion → calciné (le foyer reste propriétaire)
         for r, c in to_expire:
             self.grid[r][c] = ('X', None)
 
@@ -199,39 +245,67 @@ class FireModel:
         for r, c in to_dry:
             self.grid[r][c] = ('F', None)
 
+        self._rebuild_cache()
+
         # 5. Sautes de feu (spotting) si vent fort
         if wind_speed > 8.0:
-            self._do_spotting(dt_sim, wind_speed, wind_to_n, wind_to_e, dryness)
+            self._do_spotting(dt_sim, wind_speed, wind_to_n, wind_to_e)
 
         # 6. Mettre à jour la liste des foyers
         self._refresh_fires()
 
-    def _do_spotting(self, dt_sim, wind_speed, wind_to_n, wind_to_e, dryness):
-        """Sautes de feu probabilistes sous vent fort."""
-        burning = self.burning_cells()
-        for r, c in burning:
+    def _do_spotting(self, dt_sim, wind_speed, wind_to_n, wind_to_e):
+        """Sautes de feu probabilistes sous vent fort : chaque saute crée un foyer."""
+        for r, c in list(self._burning):
             if self._rng.random() > SPOT_PROB * dt_sim * wind_speed:
                 continue
             dist = self._rng.uniform(SPOT_MIN_M, SPOT_MAX_M) / self._cell_m
             angle = self._rng.gauss(0, 0.3)   # légère dispersion angulaire
             cos_a, sin_a = math.cos(angle), math.sin(angle)
+            # Vecteur (nord, est) sous le vent, tourné de `angle`
             dn = dist * (cos_a * wind_to_n - sin_a * wind_to_e)
             de = dist * (sin_a * wind_to_n + cos_a * wind_to_e)
-            nr = int(r + dn + 0.5)
-            nc = int(c + de + 0.5)
+            nr = int(round(r - dn))           # nord = ligne décroissante
+            nc = int(round(c + de))
             if not (0 <= nr < self._rows and 0 <= nc < self._cols):
                 continue
-            if self.grid[nr][nc][0] == 'F':
-                self.grid[nr][nc] = ('B', BURN_TIME)
+            if self.grid[nr][nc][0] != 'F':
+                continue
+            fid = self._new_fire(nr, nc, parent=self.owner[r][c])
+            self._spot_counter += 1
+            self._spot_events.append({
+                "id": self._spot_counter,
+                "from": [r, c],
+                "to": [nr, nc],
+                "fire": fid,
+            })
+            if len(self._spot_events) > MAX_SPOT_EVENTS:
+                self._spot_events.pop(0)
+        self._rebuild_cache()
+
+    def _rebuild_cache(self):
+        burning = []
+        for r in range(self._rows):
+            row = self.grid[r]
+            for c in range(self._cols):
+                if row[c][0] == 'B':
+                    burning.append((r, c))
+        self._burning = burning
 
     def _refresh_fires(self):
-        """Nettoie les foyers éteints ; associe les cellules en feu aux foyers connus."""
-        burning = set(self.burning_cells())
-        # Supprimer les foyers sans cellule active
-        extinct = [fid for fid, f in self.fires.items()
-                   if not any((cell["r"], cell["c"]) in burning for cell in f["cells"])]
-        for fid in extinct:
-            del self.fires[fid]
+        """Associe les cellules en feu à leur foyer ; supprime les foyers éteints."""
+        by_fire = {}
+        for r, c in self._burning:
+            fid = self.owner[r][c]
+            if fid is None:
+                continue
+            by_fire.setdefault(fid, []).append({"r": r, "c": c})
+        for fid in list(self.fires.keys()):
+            cells = by_fire.get(fid)
+            if not cells:
+                del self.fires[fid]
+            else:
+                self.fires[fid]["cells"] = cells
 
     # ------------------------------------------------------------------
     # Serialisation compacte pour POST /api/sim/world
@@ -246,6 +320,25 @@ class FireModel:
                 chars.append(self.grid[r][c][0])
         return "".join(chars)
 
+    def burning_intensity(self):
+        """
+        Cellules en feu avec leur intensité (0-100) : densité du combustible ×
+        profil de combustion. Format compact [[r, c, i], ...].
+        """
+        out = []
+        for r, c in self._burning:
+            remaining = self.grid[r][c][1] or 0.0
+            density = self._forest.fuel[r][c]
+            i = int(round(100 * max(0.05, min(1.0, density)) * burn_profile(remaining)))
+            out.append([r, c, max(1, i)])
+        return out
+
+    def drain_spots(self):
+        """Retourne et vide les sautes de feu survenues depuis le dernier appel."""
+        events = self._spot_events
+        self._spot_events = []
+        return events
+
     def fires_snapshot(self):
         """Liste JSON-sérialisable des foyers actifs."""
         return [
@@ -253,6 +346,8 @@ class FireModel:
                 "id": f["id"],
                 "start": f["start"],
                 "startEpochMs": f.get("startEpochMs", int(f["start"] * 1000)),
+                "origin": dict(f["origin"]),
+                "parent": f.get("parent"),
                 "cells": [{"r": cell["r"], "c": cell["c"]} for cell in f["cells"]],
             }
             for f in self.fires.values()

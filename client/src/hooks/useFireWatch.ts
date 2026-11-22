@@ -8,6 +8,7 @@ import type {
   AlertLevelPayload,
   Metrics,
 } from "@/types"
+import { packetBus } from "@/lib/packetBus"
 
 const DEFAULT_STATE: FireWatchState = {
   nodes: [],
@@ -20,6 +21,9 @@ const DEFAULT_STATE: FireWatchState = {
   sirenOverride: null,
   simulatorConnected: false,
 }
+
+/** Les mesures arrivent paquet par paquet : on les regroupe avant de toucher React. */
+const NODE_FLUSH_MS = 1000
 
 export function useFireWatch() {
   const [state, setState] = useState<FireWatchState>(DEFAULT_STATE)
@@ -35,16 +39,38 @@ export function useFireWatch() {
   useEffect(() => {
     const socket = io()
     socketRef.current = socket
+    const pending = new Map<string, FireNode>()
+    let flushTimer: ReturnType<typeof setTimeout> | null = null
 
-    socket.on("state", (s: FireWatchState) => setState(s))
+    const flush = () => {
+      flushTimer = null
+      if (!pending.size) return
+      const batch = new Map(pending)
+      pending.clear()
+      setState((prev) => {
+        const nodes = prev.nodes.map((x) => batch.get(x.id) ?? x)
+        for (const [id, n] of batch) if (!prev.nodes.some((x) => x.id === id)) nodes.push(n)
+        return { ...prev, nodes }
+      })
+    }
+
+    socket.on("state", (s: FireWatchState) => {
+      pending.clear()
+      setState(s)
+    })
 
     socket.on("node", (n: FireNode) => {
-      setState((prev) => ({
-        ...prev,
-        nodes: prev.nodes.some((x) => x.id === n.id)
-          ? prev.nodes.map((x) => (x.id === n.id ? n : x))
-          : [...prev.nodes, n],
-      }))
+      // Effets 3D (LED, impulsion radio) : immédiat, sans re-rendu
+      packetBus.emit({
+        id: n.id,
+        gw: n.gw ?? null,
+        rssi: n.readings?.rssi,
+        snr: n.readings?.snr,
+        bytes: n.bytes,
+        at: Date.now(),
+      })
+      pending.set(n.id, n)
+      if (!flushTimer) flushTimer = setTimeout(flush, NODE_FLUSH_MS)
     })
 
     socket.on("incident", (inc: Incident) =>
@@ -60,6 +86,7 @@ export function useFireWatch() {
     )
 
     return () => {
+      if (flushTimer) clearTimeout(flushTimer)
       socket.disconnect()
     }
   }, [])

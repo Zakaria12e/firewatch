@@ -17,13 +17,33 @@ const THRESH = {
 }
 
 /**
+ * Seuils effectifs : constantes par défaut, remplacées par ceux de la page
+ * Paramètres ({ smokePpm, coPpm, tempRisePerMin, humDropPerMin, irHot, tmaxHot }).
+ */
+function effectiveThresholds(custom) {
+  if (!custom) return THRESH
+  const num = (v, d) => (Number.isFinite(v) ? v : d)
+  return {
+    ...THRESH,
+    smoke_ppm: num(custom.smokePpm, THRESH.smoke_ppm),
+    co_ppm:    num(custom.coPpm, THRESH.co_ppm),
+    temp_rise: num(custom.tempRisePerMin, THRESH.temp_rise),
+    hum_drop:  Number.isFinite(custom.humDropPerMin) ? -Math.abs(custom.humDropPerMin) : THRESH.hum_drop,
+    ir_hot:    num(custom.irHot, THRESH.ir_hot),
+    tmax_hot:  num(custom.tmaxHot, THRESH.tmax_hot),
+  }
+}
+
+/**
  * @param {object} readings      – mesures brutes du nœud
  * @param {object} z             – { temp, hum, smoke, co, wind_speed, … }
  * @param {object} rates         – vitesses (unité/min) pour temp, hum, smoke, co
+ * @param {object} [custom]      – seuils de la page Paramètres (optionnel)
  * @returns {object}             – indicateurs booléens + scores bruts
  */
-export function computeIndicators(readings, z = {}, rates = {}) {
+export function computeIndicators(readings, z = {}, rates = {}, custom = undefined) {
   const r = readings || {}
+  const THRESH = effectiveThresholds(custom)
 
   // Flamme directe (capteur IR KY-026)
   const flame = !!r.flame

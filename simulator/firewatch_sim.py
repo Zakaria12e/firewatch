@@ -3,10 +3,12 @@
 FireWatch – Simulateur IoT forestier.
 
 Point d'entrée : initialise le monde (grille CA + relief + météo),
-place 12 stations, puis boucle :
+place 12 stations, 2 passerelles LoRaWAN et 1 caméra thermique, puis boucle :
   1. tick du monde (automate cellulaire, dt_sim = dt_réel × speed × time_scale)
-  2. chaque station prête envoie un paquet CoAP/CBOR/SenML
-  3. la réponse CoAP porte les ordres pour le nœud (period, siren)
+  2. chaque appareil prêt mesure le monde ; son uplink LoRa est simulé vers les
+     passerelles (RSSI, SNR, SF, perte) ; s'il est reçu, la passerelle le relaie
+     au serveur en CoAP/CBOR/SenML (sinon le paquet est perdu)
+  3. la réponse CoAP porte les ordres pour l'appareil (period, siren)
   4. toutes les ~1 s : POST /api/sim/world (vérité terrain) → reçoit la file d'ordres
 
 Usage :
@@ -36,7 +38,9 @@ import cbor2
 from coap_client import CoapClient
 from engine.world import World
 from engine.forest import COLS, ROWS, CELL_M, latlon_to_cell, cell_to_latlon
-from devices.station import Station
+from engine.radio import uplink
+from devices.base import N, VS
+from devices.sensors import create_device
 
 CENTER = (35.135, -5.215)
 GRID_COLS, GRID_ROWS = 4, 3
@@ -46,22 +50,63 @@ SPACING_M = 900
 SENML_BN, SENML_BT = -2, -3
 
 
+def _latlon(north_m, east_m):
+    lat = CENTER[0] + north_m / 111_320
+    lon = CENTER[1] + east_m / (111_320 * math.cos(math.radians(CENTER[0])))
+    return lat, lon
+
+
 def make_stations(period, world):
-    """Crée 12 stations en grille 4×3 autour du centre, et les enregistre dans le monde."""
+    """Crée 12 stations en grille 4×3 autour du centre, enregistrées dans le monde."""
     stations = []
     k = 1
     for row in range(GRID_ROWS):
         for col in range(GRID_COLS):
             north = (row - (GRID_ROWS - 1) / 2) * SPACING_M + random.uniform(-120, 120)
             east  = (col - (GRID_COLS - 1) / 2) * SPACING_M + random.uniform(-120, 120)
-            lat = CENTER[0] + north / 111_320
-            lon = CENTER[1] + east / (111_320 * math.cos(math.radians(CENTER[0])))
+            lat, lon = _latlon(north, east)
             sid = "N{:02d}".format(k)
-            st = Station(sid, lat, lon, period)
-            stations.append(st)
-            world.devices[sid] = st.to_dict()
+            world.add_device("station", lat, lon, device_id=sid, period=period)
+            stations.append(world.devices[sid])
             k += 1
     return stations
+
+
+def _highest_point(world, north_range, east_range):
+    """Point le plus haut de la forêt dans une fenêtre (m, relatifs au centre)."""
+    best = None
+    for r in range(ROWS):
+        for c in range(COLS):
+            lat, lon = cell_to_latlon(r, c)
+            north = (lat - CENTER[0]) * 111_320
+            east = (lon - CENTER[1]) * 111_320 * math.cos(math.radians(CENTER[0]))
+            if not (north_range[0] <= north <= north_range[1]
+                    and east_range[0] <= east <= east_range[1]):
+                continue
+            h = world.forest.elev[r][c]
+            if best is None or h > best[0]:
+                best = (h, lat, lon)
+    if best is None:
+        return _latlon((north_range[0] + north_range[1]) / 2, (east_range[0] + east_range[1]) / 2)
+    return best[1], best[2]
+
+
+def make_infrastructure(world, period):
+    """2 passerelles LoRaWAN sur les crêtes (NE et SO) + 1 caméra thermique centrale."""
+    lat, lon = _highest_point(world, (300, 1800), (600, 2400))
+    world.add_device("gateway", lat, lon, device_id="G01", period=30)
+    lat, lon = _highest_point(world, (-1800, -300), (-2400, -600))
+    world.add_device("gateway", lat, lon, device_id="G02", period=30)
+    lat, lon = _highest_point(world, (-700, 700), (0, 1200))
+    world.add_device("thermal", lat, lon, azimuth=90.0, device_id="C01", period=period)
+
+
+def make_world(args, speed):
+    world = World(speed=speed, real_weather=getattr(args, "real_weather", False),
+                  device_factory=create_device, default_period=args.period)
+    make_stations(args.period, world)
+    make_infrastructure(world, args.period)
+    return world
 
 
 def _http_post(url, body_dict, timeout=2.0):
@@ -105,17 +150,12 @@ def reset_server(host, http_port):
     _http_post("http://{}:{}/api/metrics/reset".format(host, http_port), {})
 
 
-def post_world(host, http_port, world, stations, timeout=2.0):
+def post_world(host, http_port, world, timeout=2.0):
     """
     Envoie la vérité terrain au serveur (POST /api/sim/world).
     Retourne la liste des ordres à appliquer (peut être vide).
     """
-    devices_list = [s.to_dict() for s in stations] + [
-        d for did, d in world.devices.items()
-        if did not in {s.id for s in stations}
-    ]
-    snap = world.snapshot(devices_list)
-    body = json.dumps(snap).encode()
+    body = json.dumps(world.snapshot()).encode()
     url = "http://{}:{}/api/sim/world".format(host, http_port)
     try:
         req = urllib.request.Request(
@@ -130,20 +170,60 @@ def post_world(host, http_port, world, stations, timeout=2.0):
         return []
 
 
-def handle_coap_response(station, resp, world):
-    """Applique la réponse CoAP au nœud (period, siren uniquement – plus de scenario)."""
+def handle_coap_response(device, resp):
+    """Applique la réponse CoAP à l'appareil (period, siren)."""
     if resp is None or not resp.get("payload"):
         return
     try:
         cmd = cbor2.loads(resp["payload"])
     except Exception:
         return
-    station.period = float(cmd.get("period", station.period))
+    if device.kind != "gateway":
+        device.period = float(cmd.get("period", device.period))
     siren = bool(cmd.get("siren", False))
-    if siren != station.siren:
-        station.siren = siren
-        flag = "ACTIVÉE" if siren else "arrêtée"
-        print("🚨 {} : SIRÈNE {}".format(station.id, flag))
+    if siren != device.siren:
+        device.siren = siren
+        if device.kind in ("station", "siren"):
+            flag = "ACTIVÉE" if siren else "arrêtée"
+            print("🚨 {} : SIRÈNE {}".format(device.id, flag))
+
+
+def transmit(dev, world, coap, rng):
+    """
+    Un appareil prêt mesure le monde et émet.
+    Retourne (statut, readings, taille) avec statut ∈ {"sent", "lost", "noack"}.
+    """
+    now = time.time()
+    dev.schedule_next(now)
+    readings = dev.read_sensors(world)
+
+    if dev.kind == "gateway":
+        # Statistiques de la passerelle : backhaul filaire, pas de liaison LoRa
+        gw_id = dev.id
+        pack = dev.build_senml(readings, radio=None)
+    else:
+        link = uplink(dev.lat, dev.lon, world.active_gateways(), world.elevation_at, rng)
+        dev.consume_battery(link["sf"] or 12)
+        if not link["delivered"]:
+            world.radio_stats["lost"] += 1
+            dev._seq += 1   # la trame est partie mais n'a été reçue par personne
+            return "lost", readings, 0
+        for gid in link["receivers"]:
+            gw = world.devices.get(gid)
+            if gw is not None and hasattr(gw, "record_rx"):
+                gw.record_rx(link["rssi_by"].get(gid))
+        gw_id = link["gw"]
+        pack = dev.build_senml(readings, radio=(link["rssi"], link["snr"], link["sf"]))
+
+    # Métadonnée ajoutée par la passerelle qui relaie le paquet
+    pack.append({N: "gw", VS: gw_id})
+    payload = cbor2.dumps(pack)
+    resp = coap.post("fw/up", payload)
+    world.radio_stats["sent"] += 1
+    if resp is None:
+        return "noack", readings, len(payload)
+    handle_coap_response(dev, resp)
+    return "sent", readings, len(payload)
 
 
 BENCH_SCENARIOS = [
@@ -168,6 +248,7 @@ def run_bench(args):
         BENCH_SPEED, RUN_DURATION_REAL))
     print()
 
+    rng = random.Random()
     all_results = []
 
     for sc in BENCH_SCENARIOS:
@@ -180,8 +261,7 @@ def run_bench(args):
             time.sleep(1.5)
 
             # Nouveau monde accéléré
-            world = World(speed=BENCH_SPEED)
-            stations = make_stations(args.period, world)
+            world = make_world(args, BENCH_SPEED)
             coap_client = CoapClient(args.host, args.port)
 
             # Lancer le scénario
@@ -197,26 +277,13 @@ def run_bench(args):
                 world.tick()
                 now = time.time()
 
-                for st in stations:
-                    if not st.ready(now):
-                        continue
-                    rssi, snr = -80.0, 5.0
-                    sf = st.sf_from_snr(snr)
-                    if random.random() < st.packet_loss(snr):
-                        st.schedule_next(now)
-                        st.consume_battery(sf)
-                        continue
-                    readings = st.read_sensors(world)
-                    pack = st.build_senml(readings, rssi, snr, sf)
-                    payload = cbor2.dumps(pack)
-                    resp = coap_client.post("fw/up", payload)
-                    st.consume_battery(sf)
-                    st.schedule_next(now)
-                    if resp:
-                        handle_coap_response(st, resp, world)
+                for dev in list(world.devices.values()):
+                    if dev.ready(now):
+                        transmit(dev, world, coap_client, rng)
 
                 if now - last_world_post >= 0.5:
-                    post_world(args.host, args.http_port, world, stations)
+                    for cmd in post_world(args.host, args.http_port, world):
+                        world.apply_command(cmd)
                     last_world_post = now
 
                 srv = get_server_state(args.host, args.http_port)
@@ -305,19 +372,25 @@ def main():
     print("🌲 FireWatch – démarrage du moteur de simulation")
     print("   Chargement du relief (peut prendre quelques secondes)…")
 
-    world = World(speed=args.speed, real_weather=args.real_weather)
-    stations = make_stations(args.period, world)
+    world = make_world(args, args.speed)
     coap = CoapClient(args.host, args.port)
+    rng = random.Random()
+    stations = [d for d in world.devices.values() if d.kind == "station"]
 
     # Démonstration CBOR vs JSON
     sample_readings = stations[0].read_sensors(world)
-    sample_pack = stations[0].build_senml(sample_readings, -80.0, 5.0, 7)
+    sample_pack = stations[0].build_senml(sample_readings, radio=(-80.0, 5.0, 7))
+    stations[0]._seq -= 1
     cbor_size = len(cbor2.dumps(sample_pack))
     json_size  = len(json.dumps(sample_pack, separators=(",", ":")).encode())
 
+    kinds = {}
+    for d in world.devices.values():
+        kinds[d.kind] = kinds.get(d.kind, 0) + 1
+
     print("   Serveur CoAP : coap://{}:{}/fw/up".format(args.host, args.port))
     print("   Serveur HTTP : http://{}:{}/api/sim/world".format(args.host, args.http_port))
-    print("   {} stations autour de {}".format(len(stations), CENTER))
+    print("   Appareils : {}".format(", ".join("{} {}".format(v, k) for k, v in kinds.items())))
     print("   Météo : {temp}°C, {hum}% HR, vent {wind_speed} m/s depuis {wind_dir}°".format(
         **world.weather))
     print("   Grille : {}×{} cellules de {} m = {:.1f}×{:.1f} km".format(
@@ -327,6 +400,7 @@ def main():
     print()
 
     last_world_post = 0.0
+    last_radio_log  = time.time()
     auto_fire_done  = False
     start_time      = time.time()
     offline_warned  = False
@@ -348,52 +422,45 @@ def main():
                     print("🔥 Feu automatique allumé en ({:.5f}, {:.5f})".format(lat, lon))
                 auto_fire_done = True
 
-            # Envoi CoAP pour les stations prêtes
-            for st in stations:
-                if not st.ready(now):
+            # Émission des appareils prêts (uplink LoRa simulé puis CoAP)
+            for dev in list(world.devices.values()):
+                if not dev.ready(now):
                     continue
-                # Radio simulée (passerelles = aucune pour l'instant, RSSI par défaut)
-                rssi, snr = -80.0, 5.0   # TODO: passerelles dynamiques
-                sf = st.sf_from_snr(snr)
-                # Perte de paquets
-                if random.random() < st.packet_loss(snr):
-                    st.schedule_next(now)
-                    st.consume_battery(sf)
-                    continue
+                status, readings, size = transmit(dev, world, coap, rng)
 
-                readings = st.read_sensors(world)
-                pack = st.build_senml(readings, rssi, snr, sf)
-                payload = cbor2.dumps(pack)
-                resp = coap.post("fw/up", payload)
-                st.consume_battery(sf)
-                st.schedule_next(now)
-
-                if resp is None:
+                if status == "noack":
                     if not offline_warned:
                         print("⚠️  Pas de réponse CoAP (serveur démarré ?)")
                         offline_warned = True
-                else:
+                elif status == "sent":
                     offline_warned = False
-                    handle_coap_response(st, resp, world)
 
                 if args.verbose or readings.get("smoke", 0) > 300:
                     flag = "🔥" if readings.get("flame") else (
                         "💨" if readings.get("smoke", 0) > 300 else "  ")
-                    print("{} {} {} T={:.1f}°C fumée={:.0f}ppm CO={:.1f}ppm ({} o)".format(
-                        flag, st.id, resp["code"] if resp else "---",
-                        readings["temp"], readings["smoke"], readings["co"], len(payload)))
+                    print("{} {} [{}] {} ({} o)".format(
+                        flag, dev.id, status,
+                        " ".join("{}={}".format(k, v) for k, v in readings.items()), size))
 
             # POST /api/sim/world toutes les ~1 s
             if now - last_world_post >= 1.0:
-                commands = post_world(args.host, args.http_port, world, stations)
+                commands = post_world(args.host, args.http_port, world)
                 for cmd in commands:
                     world.apply_command(cmd)
                 last_world_post = now
-                # Affichage du feu si actif
                 nb_burning = world.fire.active_fire_count()
                 if nb_burning and args.verbose:
                     print("   🔥 {} cellule(s) en feu (simTime={:.0f}s)".format(
                         nb_burning, world.sim_time))
+
+            # Bilan radio périodique
+            if args.verbose and now - last_radio_log >= 30.0:
+                rs = world.radio_stats
+                total = rs["sent"] + rs["lost"]
+                if total:
+                    print("   📶 PDR radio {:.0%} ({} reçus / {} émis)".format(
+                        rs["sent"] / total, rs["sent"], total))
+                last_radio_log = now
 
             time.sleep(0.1)
 

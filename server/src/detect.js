@@ -15,7 +15,9 @@ export function nodeStatus(r) {
 
 /** Indice de risque météo (0-100), inspiré des indices forêt-météo. */
 export function riskIndex({ temp, hum, wind_speed }) {
-  const score = (temp - 10) * 1.4 + (70 - hum) * 0.9 + wind_speed * 3.5
+  // Appareils sans capteur météo (passerelle, caméra, sirène…) : indice inconnu
+  if (!Number.isFinite(temp) || !Number.isFinite(hum)) return { value: null, level: "inconnu" }
+  const score = (temp - 10) * 1.4 + (70 - hum) * 0.9 + (Number.isFinite(wind_speed) ? wind_speed : 0) * 3.5
   const value = Math.round(Math.max(0, Math.min(100, score)))
   const level = value >= 80 ? "extrême" : value >= 60 ? "élevé" : value >= 35 ? "modéré" : "faible"
   return { value, level }

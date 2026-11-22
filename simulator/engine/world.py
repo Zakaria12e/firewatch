@@ -4,19 +4,27 @@ Fait le lien entre la forêt, le feu, la météo et les appareils.
 """
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Dict, List, Optional
 
-from .forest import Forest, latlon_to_cell, cell_to_latlon, ROWS, COLS, CELL_M
+from .forest import (Forest, latlon_to_cell, cell_to_latlon, ROWS, COLS, CELL_M,
+                     ORIGIN_LAT, ORIGIN_LON)
 from .fire import FireModel
 from .weather import PRESETS, default_weather
 
+# Canadair : délai (secondes réelles) entre l'ordre et l'impact de l'eau, le temps
+# que l'avion arrive sur zone (le dashboard anime l'approche à partir de impactIn).
+DROP_DELAY_S = 6.0
+DROP_KEEP_S = 8.0     # durée pendant laquelle un largage reste dans le snapshot
+
 
 class World:
-    def __init__(self, speed=1.0, real_weather=False):
+    def __init__(self, speed=1.0, real_weather=False, device_factory=None, default_period=10.0):
         """
-        speed        : facteur de vitesse de simulation (1 = temps réel, >1 = accéléré).
-        real_weather : si True, tentera Open-Meteo au démarrage.
+        speed          : facteur de vitesse de simulation (1 = temps réel, >1 = accéléré).
+        real_weather   : si True, tentera Open-Meteo au démarrage.
+        device_factory : create_device(kind, id, lat, lon, period, azimuth) → Device.
         """
         self.speed = speed
         self.forest = Forest()
@@ -27,13 +35,36 @@ class World:
             w = fetch_real_weather()
             if w:
                 self.weather = w
-        self.devices = {}       # id → {id, kind, lat, lon, azimuth, fault}
+        self.devices = {}       # id → Device (objet appareil)
+        self.device_factory = device_factory
+        self.default_period = default_period
         self.time_scale = 15    # 1 min réelle = time_scale min simulées (pour affichage)
         self.sim_time = 0.0     # secondes simulées depuis le début
+        self.drops = []         # largages Canadair [{id, lat, lon, radius, impact_at, done}]
+        self.radio_stats = {"sent": 0, "lost": 0}
         self._command_queue = []
         self._last_tick = time.time()
         self._device_id_counter = 0
+        self._drop_counter = 0
         self._scheduled_commands = []   # [(sim_time_trigger, cmd)]
+
+    # ------------------------------------------------------------------
+    # Géométrie
+    # ------------------------------------------------------------------
+    def elevation_at(self, lat, lon):
+        """Altitude (m) de la cellule qui contient (lat, lon), bornée à la grille."""
+        r, c = latlon_to_cell(lat, lon)
+        r = min(ROWS - 1, max(0, r))
+        c = min(COLS - 1, max(0, c))
+        return self.forest.elev[r][c]
+
+    @staticmethod
+    def cell_center(r, c):
+        return cell_to_latlon(r, c)
+
+    def active_gateways(self):
+        return [d for d in self.devices.values()
+                if d.kind == "gateway" and getattr(d, "active", lambda: True)()]
 
     # ------------------------------------------------------------------
     # Tick
@@ -51,6 +82,13 @@ class World:
         for item in due:
             self._scheduled_commands.remove(item)
             self.apply_command(item[1])
+        # Largages Canadair arrivés sur zone
+        for d in self.drops:
+            if not d["done"] and now >= d["impact_at"]:
+                r, c = latlon_to_cell(d["lat"], d["lon"])
+                self.fire.extinguish(r, c, d["radius"])
+                d["done"] = True
+        self.drops = [d for d in self.drops if now - d["impact_at"] < DROP_KEEP_S]
 
     # ------------------------------------------------------------------
     # Ordres
@@ -79,7 +117,7 @@ class World:
             self.weather["wind_speed"] = float(cmd.get("speed", self.weather["wind_speed"]))
             self.weather["wind_dir"]   = float(cmd.get("dir",   self.weather["wind_dir"]))
         elif t == "weather":
-            for key in ("temp", "hum", "fmc"):
+            for key in ("temp", "hum", "fmc", "rain"):
                 if key in cmd:
                     self.weather[key] = float(cmd[key])
         elif t == "preset":
@@ -87,45 +125,65 @@ class World:
             if name in PRESETS:
                 self.weather = dict(PRESETS[name])
         elif t == "water":
-            r, c = latlon_to_cell(cmd["lat"], cmd["lon"])
-            self.fire.extinguish(r, c, float(cmd.get("radius", 150)))
+            self._schedule_drop(float(cmd["lat"]), float(cmd["lon"]), float(cmd.get("radius", 150)))
         elif t == "device_add":
             self._add_device(cmd)
         elif t == "device_move":
-            dev = self.devices.get(cmd["id"])
+            dev = self.devices.get(cmd.get("id"))
             if dev:
-                dev["lat"] = float(cmd["lat"])
-                dev["lon"] = float(cmd["lon"])
+                dev.lat = float(cmd["lat"])
+                dev.lon = float(cmd["lon"])
         elif t == "device_rotate":
-            dev = self.devices.get(cmd["id"])
+            dev = self.devices.get(cmd.get("id"))
             if dev:
-                dev["azimuth"] = float(cmd.get("azimuth", 0))
+                dev.azimuth = float(cmd.get("azimuth", 0)) % 360.0
         elif t == "device_remove":
             self.devices.pop(cmd.get("id"), None)
         elif t == "device_fault":
             dev = self.devices.get(cmd.get("id"))
             if dev:
-                dev["fault"] = cmd.get("mode", "ok")
+                dev.set_fault(cmd.get("mode", "ok"))
         elif t == "time_scale":
             self.time_scale = max(1, int(cmd.get("x", 15)))
         elif t == "reset":
             self.fire.reset()
             self.weather = default_weather()
+            self.drops = []
+            self._scheduled_commands.clear()
         elif t == "scenario":
             self._run_scenario(cmd.get("name", "chergui"))
 
-    def _add_device(self, cmd):
-        did = "D{:04d}".format(self._device_id_counter)
-        self._device_id_counter += 1
-        self.devices[did] = {
-            "id": did,
-            "kind": cmd.get("kind", "station"),
-            "lat": float(cmd["lat"]),
-            "lon": float(cmd["lon"]),
-            "azimuth": float(cmd.get("azimuth", 0)),
-            "fault": "ok",
-        }
+    def _schedule_drop(self, lat, lon, radius):
+        """Canadair : l'eau touche le sol DROP_DELAY_S secondes après l'ordre."""
+        self._drop_counter += 1
+        self.drops.append({
+            "id": self._drop_counter,
+            "lat": lat,
+            "lon": lon,
+            "radius": radius,
+            "impact_at": time.time() + DROP_DELAY_S,
+            "done": False,
+        })
+
+    def add_device(self, kind, lat, lon, azimuth=0.0, device_id=None, period=None):
+        """Crée et enregistre un appareil ; retourne son id (None sans fabrique)."""
+        if self.device_factory is None:
+            return None
+        did = device_id
+        if did is None:
+            self._device_id_counter += 1
+            did = "D{:03d}".format(self._device_id_counter)
+            while did in self.devices:
+                self._device_id_counter += 1
+                did = "D{:03d}".format(self._device_id_counter)
+        dev = self.device_factory(kind, did, float(lat), float(lon),
+                                  period or self.default_period, float(azimuth))
+        self.devices[did] = dev
         return did
+
+    def _add_device(self, cmd):
+        return self.add_device(cmd.get("kind", "station"), cmd["lat"], cmd["lon"],
+                               cmd.get("azimuth", 0) or 0)
 
     def _ignite_near(self, lat, lon):
         """Allume la cellule la plus proche de (lat, lon) qui soit combustible."""
@@ -187,10 +245,6 @@ class World:
         heat  : chaleur (cellules en feu proches)
         smoke : exposition au panache (cellules en feu sous le vent)
         """
-        import math
-        from .forest import latlon_to_cell, cell_to_latlon, CELL_M
-
-        wind_speed = self.weather.get("wind_speed", 0.0)
         wind_from  = math.radians(self.weather.get("wind_dir", 0.0))
         # Vecteur vers lequel souffle le vent
         wind_to_n = -math.cos(wind_from)
@@ -201,13 +255,6 @@ class World:
             return 0.0, 0.0
 
         center_lat = 35.135
-        center_lon = -5.215
-
-        def cell_dist_m(r, c):
-            clat, clon = cell_to_latlon(r, c)
-            dlat = (lat - clat) * 111_320
-            dlon = (lon - clon) * 111_320 * math.cos(math.radians(center_lat))
-            return math.hypot(dlat, dlon), dlat, dlon
 
         heat_sum = 0.0
         smoke_sum = 0.0
@@ -215,7 +262,10 @@ class World:
         SMOKE_RANGE = 3000.0  # m : panache peut aller loin
 
         for (r, c) in burning:
-            dist, dlat_m, dlon_m = cell_dist_m(r, c)
+            clat, clon = cell_to_latlon(r, c)
+            dlat_m = (lat - clat) * 111_320
+            dlon_m = (lon - clon) * 111_320 * math.cos(math.radians(center_lat))
+            dist = math.hypot(dlat_m, dlon_m)
             if dist < 1.0:
                 dist = 1.0
 
@@ -245,25 +295,35 @@ class World:
     # ------------------------------------------------------------------
     # Snapshot pour POST /api/sim/world
     # ------------------------------------------------------------------
-    def snapshot(self, devices_list):
+    def snapshot(self):
         """
         Retourne un dict JSON-sérialisable représentant la vérité terrain.
-        devices_list = liste des devices IoT actuels (stations + ajouts dynamiques).
+        - grid.cells : 1 caractère par cellule (F, B, X, W, R)
+        - burning    : [[r, c, intensité 0-100], ...] des cellules en feu
+        - spots      : sautes de feu survenues depuis le dernier snapshot
+        - drops      : largages Canadair en cours (impactIn = s avant impact)
         """
+        now = time.time()
         return {
             "grid": {
-                "origin": {
-                    "lat": self.forest.rows,   # nombre de lignes (le client peut recalculer)
-                    "lon": self.forest.cols,
-                },
+                "origin": {"lat": ORIGIN_LAT, "lon": ORIGIN_LON},
                 "cell": CELL_M,
                 "rows": ROWS,
                 "cols": COLS,
                 "cells": self.fire.compact_grid(),
             },
             "fires": self.fire.fires_snapshot(),
+            "burning": self.fire.burning_intensity(),
+            "spots": self.fire.drain_spots(),
+            "drops": [
+                {"id": d["id"], "lat": d["lat"], "lon": d["lon"], "radius": d["radius"],
+                 "impactIn": round(d["impact_at"] - now, 2)}
+                for d in self.drops
+            ],
             "weather": dict(self.weather),
-            "devices": [dict(d) for d in devices_list],
+            "devices": [d.to_dict() for d in self.devices.values()],
+            "radio": dict(self.radio_stats),
             "timeScale": self.time_scale,
+            "speed": self.speed,
             "simTime": round(self.sim_time, 1),
         }

@@ -40,7 +40,8 @@ function meanWind(nodes) {
  *
  * @param {object[]} allNodes  – nœuds avec {id, lat, lon, ts, readings, period}
  * @param {number}   now       – Date.now()
- * @param {object}   context   – { burnZones, timeScale, worldWeather? }
+ * @param {object}   context   – { burnZones, timeScale, worldWeather?, settings? }
+ *                               settings = { thresholds, fusion } (page Paramètres)
  * @returns {object}           – résultat de l'évaluation
  */
 export function evaluate(allNodes, now = Date.now(), context = {}) {
@@ -92,15 +93,18 @@ export function evaluate(allNodes, now = Date.now(), context = {}) {
   // ----------------------------------------------------------------
   // Étape 3 : indicateurs par nœud
   // ----------------------------------------------------------------
+  const settings = context.settings || {}
   const withIndicators = recent.map((n) => ({
     ...n,
-    indicators: computeIndicators(n.readings, n.z, n.rates),
+    indicators: computeIndicators(n.readings, n.z, n.rates, settings.thresholds),
     risk: riskIndex(n.readings || {}),
   }))
 
   const wind = meanWind(recent)
-  const avgRisk = recent.length
-    ? { value: Math.round(withIndicators.reduce((s, n) => s + n.risk.value, 0) / recent.length) }
+  // Indice de risque : seulement les appareils qui mesurent la météo
+  const riskNodes = withIndicators.filter((n) => Number.isFinite(n.risk.value))
+  const avgRisk = riskNodes.length
+    ? { value: Math.round(riskNodes.reduce((s, n) => s + n.risk.value, 0) / riskNodes.length) }
     : { value: 0 }
 
   // ----------------------------------------------------------------
@@ -127,7 +131,7 @@ export function evaluate(allNodes, now = Date.now(), context = {}) {
       ? { kind: "brouillard", label: "Fausse fumée – humidité > 85 % (brouillard/condensation)" }
       : null
     return {
-      level: alertLevel(0, [], avgRisk),
+      level: alertLevel(0, [], avgRisk, settings.fusion),
       score: 0,
       confirmed: false,
       suspects: [],
@@ -151,8 +155,8 @@ export function evaluate(allNodes, now = Date.now(), context = {}) {
   // Traiter chaque cluster indépendamment ; prendre le plus dangereux
   let bestResult = null
   for (const cluster of clusters) {
-    const score = fusionScore(cluster, wind, avgRisk)
-    const level = alertLevel(score, cluster, avgRisk)
+    const score = fusionScore(cluster, wind, avgRisk, settings.fusion)
+    const level = alertLevel(score, cluster, avgRisk, settings.fusion)
 
     // Position estimée
     const pos = localizeFire(cluster, allNodes, wind)

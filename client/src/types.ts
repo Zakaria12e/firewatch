@@ -54,6 +54,28 @@ export interface NodeReadings {
   gust?: number
   rssi?: number
   snr?: number
+  hot_bearing?: number
+  hot_px?: number
+  rx?: number
+  rssi_avg?: number
+  on?: boolean
+}
+
+export interface SenmlRecord {
+  bn?: string
+  bt?: number
+  n?: string
+  u?: string
+  v?: number
+  vs?: string
+  vb?: boolean
+}
+
+export interface LastPacket {
+  hex: string
+  senml: SenmlRecord[]
+  cborBytes: number
+  jsonBytes: number
 }
 
 export interface FireNode {
@@ -62,12 +84,19 @@ export interface FireNode {
   lon: number
   ts: number
   readings: NodeReadings
-  status: NodeFault
-  risk: { value: number }
+  /** statut brut des capteurs (ok / suspect / feu) */
+  status: NodeFault | "suspect" | "feu"
+  /** santé calculée par le pipeline (§6.2) */
+  health?: NodeFault
+  risk: { value: number | null }
   period: number
   bytes: number
   online: boolean
   siren: boolean
+  gw?: string | null
+  seq?: number
+  sf?: number
+  lastPacket?: LastPacket
 }
 
 export interface Zone {
@@ -154,14 +183,38 @@ export interface WorldDevice {
   lon: number
   azimuth: number
   fault: FaultMode
+  /** état physique de la sirène / du relais de l'appareil */
+  siren?: boolean
+}
+
+export interface WorldFire {
+  id: string
+  start: number
+  startEpochMs?: number
+  origin?: { r: number; c: number }
+  parent?: string | null
+  cells: { r: number; c: number }[]
+}
+
+export interface WorldWeather extends Weather {
+  gust?: number
+  rain?: number
 }
 
 export interface WorldState {
   grid?: { cells: string; rows: number; cols: number; cell: number; origin?: { lat: number; lon: number } }
-  fires?: { id: string; start: number; cells: [number, number][] }[]
-  weather?: Weather
+  fires?: WorldFire[]
+  /** cellules en feu : [ligne, colonne, intensité 0-100] */
+  burning?: [number, number, number][]
+  /** sautes de feu depuis le dernier snapshot */
+  spots?: { id: number; from: [number, number]; to: [number, number]; fire?: string }[]
+  /** largages Canadair : impactIn = secondes avant l'impact (négatif = passé) */
+  drops?: { id: number; lat: number; lon: number; radius: number; impactIn: number }[]
+  weather?: WorldWeather
   devices?: WorldDevice[]
+  radio?: { sent: number; lost: number }
   timeScale?: number
+  speed?: number
   simTime?: number
 }
 

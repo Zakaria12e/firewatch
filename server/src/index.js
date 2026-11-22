@@ -19,12 +19,13 @@ import {
   recordPacket, recordFireStart, recordSuspicion, recordConfirmation,
   recordFireReset, recordFalseAlertAvoided, getMetrics, resetMetrics,
 } from "./metrics.js"
-import { getSettings, updateSettings } from "./settings.js"
+import { getSettings, getDefaults, updateSettings, resetSettings } from "./settings.js"
 
 // ---------------------------------------------------------------------------
 // État en mémoire
 // ---------------------------------------------------------------------------
 const nodes = new Map()          // id -> nœud
+const healthById = new Map()     // id -> défaut de santé (pipeline §6.2), absent = ok
 let incident = null              // incendie en cours
 let sirenOverride = null         // true / false forcé depuis le dashboard, null = auto
 let lastEval = 0
@@ -45,11 +46,15 @@ const sirenFor = (node) => {
   return nearFire || inZone30
 }
 
-const publicNode = (n) => ({
-  ...n,
-  online: Date.now() - n.ts < Math.max(30_000, n.period * 3000),
-  siren: sirenFor(n),
-})
+const publicNode = (n) => {
+  const online = Date.now() - n.ts < Math.max(30_000, n.period * 3000)
+  return {
+    ...n,
+    online,
+    health: online ? (healthById.get(n.id) ?? "ok") : "hors_ligne",
+    siren: sirenFor(n),
+  }
+}
 
 const publicState = async () => {
   const simConnected = Date.now() - lastWorldAt < 3000
@@ -91,9 +96,20 @@ app.get("/api/incidents/:id", async (req, res) => {
   res.json(inc)
 })
 app.get("/api/settings", (_req, res) => res.json(getSettings()))
+app.get("/api/settings/defaults", (_req, res) => res.json(getDefaults()))
 app.put("/api/settings", (req, res) => {
   if (!req.body) return res.status(400).json({ error: "body manquant" })
   res.json(updateSettings(req.body))
+})
+app.post("/api/settings/reset", (_req, res) => res.json(resetSettings()))
+
+// Canaux d'alerte configurés dans .env (le jeton Pushover n'est jamais exposé)
+app.get("/api/alerts/channels", (_req, res) => {
+  const s = getSettings().alerts
+  res.json({
+    ntfy: { configured: !!config.ntfyTopic, topic: config.ntfyTopic || null, enabled: s.ntfyEnabled },
+    pushover: { configured: !!(config.pushoverToken && config.pushoverUser), enabled: s.pushoverEnabled },
+  })
 })
 app.get("/api/metrics", (_req, res) =>
   res.json(getMetrics([...nodes.values()].map(publicNode)))
@@ -208,13 +224,20 @@ async function runDetection() {
   if (now - lastEval < 1000) return
   lastEval = now
 
+  const settings = getSettings()
   const detContext = {
     worldWeather: worldState?.weather,
     timeScale: worldState?.timeScale ?? config.timeScale,
-    burnZones: [],   // zones de brûlage déclarées (configurables depuis /api/settings)
+    // Zones de brûlage déclarées (page Paramètres) : polygones [[lat, lon], …]
+    burnZones: (settings.burnZones || []).map((z) => z.polygon).filter((p) => Array.isArray(p) && p.length >= 3),
+    settings: { thresholds: settings.thresholds, fusion: settings.fusion },
   }
   const result = evaluate([...nodes.values()], now, detContext)
   if (result.suspects.length) lastSuspectAt = now
+
+  // Santé des appareils (§6.2) : exposée au dashboard (badge, inventaire)
+  healthById.clear()
+  for (const d of result.defects || []) healthById.set(d.id, d.fault)
 
   // Métriques de détection
   if (result.level === "suspicion" || result.level === "pré-alerte") recordSuspicion(now)
@@ -284,6 +307,19 @@ function parseSenml(pack) {
   return { id, ts: bt ? bt * 1000 : Date.now(), values }
 }
 
+/** SenML à labels entiers → labels lisibles (RFC 8428 §6), pour le dashboard. */
+const SENML_LABELS = [[-2, "bn"], [-3, "bt"], [0, "n"], [1, "u"], [2, "v"], [3, "vs"], [4, "vb"]]
+function labelSenml(pack) {
+  return pack.map((rec) => {
+    const out = {}
+    for (const [k, label] of SENML_LABELS) if (rec[k] !== undefined) out[label] = rec[k]
+    return out
+  })
+}
+
+// Métadonnées radio/relais : hors des mesures physiques
+const META_KEYS = new Set(["lat", "lon", "gw", "seq", "sf"])
+
 const coapServer = coap.createServer({ type: "udp4" })
 
 coapServer.on("request", (req, res) => {
@@ -300,13 +336,17 @@ coapServer.on("request", (req, res) => {
     res.code = "4.00"
     return res.end(`SenML/CBOR invalide : ${e.message}`)
   }
-  recordPacket(req.payload.length, Buffer.byteLength(JSON.stringify(rawPack)))
+  const jsonBytes = Buffer.byteLength(JSON.stringify(rawPack))
+  recordPacket(req.payload.length, jsonBytes, { id: msg.id, seq: msg.values.seq })
 
+  // Toutes les mesures du paquet (station complète ou capteur simple : DHT22, MQ-2,
+  // caméra thermique…), sans les métadonnées de position et de relais
   const v = msg.values
-  const readings = {
-    temp: v.temp, hum: v.hum, smoke: v.smoke, co: v.co, flame: !!v.flame,
-    wind_speed: v.wind_speed, wind_dir: v.wind_dir, bat: v.bat,
+  const readings = {}
+  for (const [k, val] of Object.entries(v)) {
+    if (!META_KEYS.has(k) && val !== undefined) readings[k] = val
   }
+  if ("flame" in readings) readings.flame = !!readings.flame
   const status = nodeStatus(readings)
   const danger = status !== "ok" || incident?.status === "actif"
   const node = {
@@ -319,6 +359,16 @@ coapServer.on("request", (req, res) => {
     risk: riskIndex(readings),
     period: danger ? config.periodAlert : config.periodNormal,
     bytes: req.payload.length,
+    gw: typeof v.gw === "string" ? v.gw : null,   // passerelle qui a relayé le paquet
+    seq: v.seq,
+    sf: v.sf,
+    // Dernier paquet tel que reçu : hexadécimal CBOR + SenML décodé (inspection)
+    lastPacket: {
+      hex: Buffer.from(req.payload).toString("hex"),
+      senml: labelSenml(rawPack),
+      cborBytes: req.payload.length,
+      jsonBytes,
+    },
   }
   nodes.set(node.id, node)
   saveMeasurement({ node: node.id, ts: new Date(msg.ts), lat: node.lat, lon: node.lon, status, ...readings })

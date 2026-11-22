@@ -1,6 +1,6 @@
 import { useRef, useCallback, useMemo, useEffect, useState } from "react"
 import ReactMap, { Marker, Source, Layer, NavigationControl, type MapRef } from "react-map-gl/maplibre"
-import type { Map as MapLibreMap, MapLayerMouseEvent } from "maplibre-gl"
+import type { Map as MapLibreMap, MapLayerMouseEvent, Marker as MarkerInstance } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
 import type { FireWatchState, WorldState, AlertLevelPayload, FireNode, WorldDevice, NodeReadings } from "@/types"
 import type { Feature, FeatureCollection, Polygon } from "geojson"
@@ -10,6 +10,10 @@ import {
   Battery, Signal,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
+import { FireFxLayer, FX_LAYER_ID } from "@/map3d/FireFxLayer"
+import { GroundOverlay, GROUND_LAYER } from "@/map3d/groundOverlay"
+import { useEffectsQuality, useReducedMotion, useShowFps } from "@/map3d/quality"
+import { GATEWAY_RANGE_M } from "@/map3d/fx/devices"
 
 // ---------------------------------------------------------------------------
 // Constantes de tuiles
@@ -18,7 +22,14 @@ const TERRARIUM      = ["https://s3.amazonaws.com/elevation-tiles-prod/terrarium
 const ESRI_SATELLITE = ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"]
 const EOX_CLOUDLESS  = ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/GoogleMapsCompatible/{z}/{y}/{x}.jpg"]
 const OPENTOPO       = ["https://tile.opentopomap.org/{z}/{x}/{y}.png"]
-const CARTO_DARK     = ["https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"]
+// CARTO requiert une API key depuis 2024 → OSM en fantôme sur fond noir (look "ops nocturne")
+const OSM_BASE       = [
+  "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  "https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
+]
+
+const TERRAIN_EXAGGERATION = 2.2
 
 type Basemap = "satellite" | "topo" | "dark"
 
@@ -31,9 +42,10 @@ function buildStyle(basemap: Basemap, esriOk: boolean): object {
         attribution: esriOk ? "Imagerie © Esri, Maxar, Earthstar Geographics" : "© EOX Sentinel-2", maxzoom: 19 }
     : basemap === "topo"
     ? { type: "raster", tiles: OPENTOPO, tileSize: 256, attribution: "© OpenTopoMap", maxzoom: 17 }
-    : { type: "raster", tiles: CARTO_DARK, tileSize: 512, attribution: "© CARTO © OpenStreetMap", maxzoom: 19 }
+    // Dark : OSM en fantôme sur fond #030303 → "ops nocturne" sans API key
+    : { type: "raster", tiles: OSM_BASE, tileSize: 256, attribution: "© OpenStreetMap contributors", maxzoom: 19 }
 
-  const bgColor = basemap === "satellite" ? "#000011" : basemap === "topo" ? "#1a1a1a" : "#0d0d0d"
+  const bgColor = basemap === "satellite" ? "#000000" : basemap === "topo" ? "#1a1a1a" : "#030303"
 
   return {
     version: 8,
@@ -45,18 +57,20 @@ function buildStyle(basemap: Basemap, esriOk: boolean): object {
     layers: [
       { id: "background", type: "background", paint: { "background-color": bgColor } },
       { id: "basemap", type: "raster", source: "basemap",
-        paint: { "raster-opacity": basemap === "satellite" ? 1 : basemap === "topo" ? 0.9 : 0.85 } },
+        // Dark : opacité fantôme pour garder les contours géographiques sans fond clair
+        paint: { "raster-opacity": basemap === "dark" ? 0.07 : basemap === "topo" ? 0.90 : 1 } },
       { id: "hillshade", type: "hillshade", source: "hillshade-dem",
-        paint: { "hillshade-exaggeration": 0.5, "hillshade-shadow-color": "#000020", "hillshade-highlight-color": "#ffffff" } },
+        paint: { "hillshade-exaggeration": 0.5, "hillshade-shadow-color": "#000000", "hillshade-highlight-color": "#ffffff" } },
     ],
-    // Brume ambrée horizon (Chergui / forêt sèche du Rif)
-    fog: {
-      "range": [0.5, 12],
-      "color": "#0d0502",
-      "high-color": "#1c0905",
-      "horizon-blend": 0.08,
-      "space-color": "#010203",
-      "star-intensity": 0.05,
+    // Ciel et brume d'horizon (spécification MapLibre « sky »)
+    sky: {
+      "sky-color": "#000000",
+      "horizon-color": "#1a0c06",
+      "fog-color": "#0d0604",
+      "fog-ground-blend": 0.6,
+      "horizon-fog-blend": 0.6,
+      "sky-horizon-blend": 0.5,
+      "atmosphere-blend": 0.4,
     },
   }
 }
@@ -64,9 +78,6 @@ function buildStyle(basemap: Basemap, esriOk: boolean): object {
 // ---------------------------------------------------------------------------
 // Utilitaires GeoJSON
 // ---------------------------------------------------------------------------
-const CENTER_LAT = 35.135
-const CENTER_LON = -5.215
-
 function circlePolygon(lat: number, lon: number, radiusM: number, steps = 48): Feature<Polygon> {
   const latR = radiusM / 111_320
   const lonR = radiusM / (111_320 * Math.cos(lat * Math.PI / 180))
@@ -93,38 +104,6 @@ function conePolygon(lat: number, lon: number, azDeg: number, rangeM = 800, half
   return { type: "Feature", geometry: { type: "Polygon", coordinates: [coords] }, properties: {} }
 }
 
-function fireCellsGeoJSON(world: WorldState | null): FeatureCollection {
-  const fires = world?.fires ?? []
-  const grid  = world?.grid
-  if (!fires.length || !grid) return { type: "FeatureCollection", features: [] }
-
-  const { rows, cols, cell: cellM, origin } = grid
-  const latPerCell = cellM / 111_320
-  const lonPerCell = cellM / (111_320 * Math.cos(CENTER_LAT * Math.PI / 180))
-  const originLat = origin?.lat ?? (CENTER_LAT + (rows / 2) * latPerCell)
-  const originLon = origin?.lon ?? (CENTER_LON - (cols / 2) * lonPerCell)
-
-  const features: Feature[] = []
-  for (const fire of fires) {
-    for (const [row, col] of fire.cells ?? []) {
-      const lat = originLat - row * latPerCell
-      const lon = originLon + col * lonPerCell
-      features.push({
-        type: "Feature",
-        geometry: { type: "Polygon", coordinates: [[
-          [lon,              lat],
-          [lon + lonPerCell, lat],
-          [lon + lonPerCell, lat - latPerCell],
-          [lon,              lat - latPerCell],
-          [lon,              lat],
-        ]] },
-        properties: { height: 40 + Math.random() * 60 },
-      })
-    }
-  }
-  return { type: "FeatureCollection", features }
-}
-
 function zonesGeoJSON(zones: { minutes: number; polygon: [number, number][] }[] | undefined): FeatureCollection {
   if (!zones?.length) return { type: "FeatureCollection", features: [] }
   return {
@@ -142,41 +121,42 @@ function uncertaintyGeoJSON(pos: { lat: number; lon: number; uncertainty_m?: num
   return { type: "FeatureCollection", features: [circlePolygon(pos.lat, pos.lon, pos.uncertainty_m ?? 500)] }
 }
 
-function gatewayGeoJSON(devices: WorldDevice[] | undefined): FeatureCollection {
-  const gws = devices?.filter((d) => d.kind === "gateway") ?? []
+function gatewayGeoJSON(devices: WorldDevice[]): FeatureCollection {
+  const gws = devices.filter((d) => d.kind === "gateway" && d.fault !== "offline")
   return {
     type: "FeatureCollection",
-    features: gws.map((gw) => ({ ...circlePolygon(gw.lat, gw.lon, 3500), properties: { id: gw.id } })),
+    features: gws.map((gw) => ({ ...circlePolygon(gw.lat, gw.lon, GATEWAY_RANGE_M, 72), properties: { id: gw.id } })),
   }
 }
 
-function cameraGeoJSON(devices: WorldDevice[] | undefined): FeatureCollection {
-  const cams = devices?.filter((d) => d.kind === "thermal") ?? []
+function cameraGeoJSON(devices: WorldDevice[]): FeatureCollection {
+  const cams = devices.filter((d) => d.kind === "thermal" && d.fault !== "offline")
   return {
     type: "FeatureCollection",
     features: cams.map((c) => ({ ...conePolygon(c.lat, c.lon, c.azimuth ?? 0), properties: { id: c.id } })),
   }
 }
 
-function radioLinksGeoJSON(devices: WorldDevice[] | undefined): FeatureCollection {
-  if (!devices?.length) return { type: "FeatureCollection", features: [] }
+/** Liens radio : appareil → passerelle qui a relayé son dernier paquet (sinon la plus proche). */
+function radioLinksGeoJSON(devices: WorldDevice[], nodeById: Map<string, FireNode>): FeatureCollection {
   const gws = devices.filter((d) => d.kind === "gateway")
   if (!gws.length) return { type: "FeatureCollection", features: [] }
-  const others = devices.filter((d) => d.kind !== "gateway")
+  const gwById = new Map(gws.map((g) => [g.id, g]))
   const features: Feature[] = []
-  for (const dev of others) {
-    const nearest = gws.reduce<WorldDevice | null>((best, gw) => {
-      const d = Math.hypot(gw.lat - dev.lat, gw.lon - dev.lon)
-      if (!best) return gw
-      return d < Math.hypot(best.lat - dev.lat, best.lon - dev.lon) ? gw : best
-    }, null)
-    if (nearest) {
-      features.push({
-        type: "Feature",
-        geometry: { type: "LineString", coordinates: [[dev.lon, dev.lat], [nearest.lon, nearest.lat]] },
-        properties: { fault: dev.fault },
-      })
+  for (const dev of devices) {
+    if (dev.kind === "gateway") continue
+    const node = nodeById.get(dev.id)
+    let gw = node?.gw ? gwById.get(node.gw) : undefined
+    if (!gw) {
+      gw = gws.reduce((best, g) =>
+        Math.hypot(g.lat - dev.lat, g.lon - dev.lon) < Math.hypot(best.lat - dev.lat, best.lon - dev.lon) ? g : best)
     }
+    const rssi = node?.readings?.rssi
+    features.push({
+      type: "Feature",
+      geometry: { type: "LineString", coordinates: [[dev.lon, dev.lat], [gw.lon, gw.lat]] },
+      properties: { rssi: rssi ?? -200, live: node?.online && node.gw ? 1 : 0 },
+    })
   }
   return { type: "FeatureCollection", features }
 }
@@ -196,16 +176,6 @@ const DEVICE_ICONS: Record<string, { Icon: LucideIcon; color: string; bg: string
   rain:     { Icon: CloudRain,     color: "#93c5fd", bg: "#1d4ed8" },
   siren:    { Icon: Bell,          color: "#fda4af", bg: "#be123c" },
   gateway:  { Icon: Radio,         color: "#6ee7b7", bg: "#065f46" },
-}
-
-const FAULT_OPACITY: Record<string, number> = {
-  ok:              1,
-  batterie_faible: 0.8,
-  figé:            0.6,
-  aberrant:        0.9,
-  dérive:          0.75,
-  hors_ligne:      0.35,
-  offline:         0.35,
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +216,8 @@ function getReadings(kind: string, r: NodeReadings): Measurement[] {
       if (r.flame !== undefined) m.push({ label: "Flamme", value: r.flame ? "Oui" : "Non", unit: "" }); break
     case "thermal":
       add("T. max", r.tmax, "°C", 1)
-      if (r.ir !== undefined) m.push({ label: "Cap. chaud", value: r.ir.toFixed(0), unit: "°" }); break
+      add("Relèvement", r.hot_bearing, "°", 0)
+      add("Pixels chauds", r.hot_px, "", 0); break
     case "wind":
       add("Vitesse", r.wind_speed, "m/s"); add("Direction", r.wind_dir, "°", 0)
       add("Rafale", r.gust, "m/s"); break
@@ -254,6 +225,10 @@ function getReadings(kind: string, r: NodeReadings): Measurement[] {
       add("FMC", r.fmc, "%", 1); break
     case "rain":
       add("Pluie", r.rain, "mm/h"); break
+    case "gateway":
+      add("Paquets reçus", r.rx, "", 0); add("RSSI moyen", r.rssi_avg, "dBm", 0); break
+    case "siren":
+      if (r.on !== undefined) m.push({ label: "Sirène", value: r.on ? "En marche" : "Arrêt", unit: "" }); break
   }
   return m
 }
@@ -269,6 +244,12 @@ const FAULT_COLOR: Record<string, string> = {
   dérive: "#ff9f0a", batterie_faible: "#ffd60a", offline: "#636366",
 }
 
+/** État affiché : santé calculée par le serveur, sinon panne injectée dans le monde. */
+function deviceState(device: WorldDevice, node?: FireNode): string {
+  if (node) return node.online ? (node.health ?? "ok") : "hors_ligne"
+  return device.fault === "offline" ? "hors_ligne" : "ok"
+}
+
 function DeviceTooltip({
   device, node, onClose, x, y,
 }: {
@@ -280,7 +261,7 @@ function DeviceTooltip({
 }) {
   const cfg = DEVICE_ICONS[device.kind] ?? DEVICE_ICONS.station
   const { Icon, color } = cfg
-  const fault = node?.status ?? (device.fault !== "ok" ? device.fault : "ok")
+  const fault = deviceState(device, node)
   const faultColor = FAULT_COLOR[fault] ?? "#ffffff"
   const bat = node?.readings?.bat
   const rssi = node?.readings?.rssi
@@ -297,6 +278,7 @@ function DeviceTooltip({
   return (
     <div
       className="fixed z-[200] flex flex-col overflow-hidden"
+      onClick={(e) => e.stopPropagation()}
       style={{
         left: cx, top: cy, width: W,
         background: "rgba(28,28,30,0.90)",
@@ -383,6 +365,9 @@ function DeviceTooltip({
                 SNR <span className="text-white/60">{snr.toFixed(1)}</span> dB
               </span>
             )}
+            {node?.gw && (
+              <span className="text-[10px] font-mono ml-auto" style={{ color: "rgba(235,235,245,0.4)" }}>{node.gw}</span>
+            )}
           </div>
         )}
 
@@ -398,65 +383,41 @@ function DeviceTooltip({
 }
 
 // ---------------------------------------------------------------------------
-// Marqueur d'appareil avec mât vertical et ombre au sol
+// Étiquette DOM au-dessus du modèle 3D (ID + état), glissable
 // ---------------------------------------------------------------------------
-function DeviceMarker({
-  device, node, onClick,
-}: {
+const LABEL_DOT: Record<string, string> = {
+  ok: "#30D158", batterie_faible: "#FFD60A", hors_ligne: "#474747",
+  figé: "#FF5A1F", dérive: "#FF5A1F", aberrant: "#E0260E",
+}
+
+function DeviceLabel({ device, node, onClick }: {
   device: WorldDevice
   node?: FireNode
   onClick?: (e: React.MouseEvent) => void
 }) {
-  const cfg = DEVICE_ICONS[device.kind] ?? DEVICE_ICONS.station
-  const { Icon, color, bg } = cfg
-  const fault = node?.status ?? (device.fault !== "ok" ? device.fault : "ok")
-  const opacity = FAULT_OPACITY[fault] ?? 1
-  const isSiren = node?.siren
-  const isOnline = node ? node.online : device.fault !== "offline"
-
+  const state = deviceState(device, node)
+  const dim = state === "hors_ligne"
+  const sounding = device.siren || node?.siren
   return (
     <div
-      className="relative flex flex-col items-center select-none cursor-pointer"
-      style={{ opacity }}
-      title={`${device.id} · ${device.kind} · ${fault}${node ? ` · T=${node.readings?.temp?.toFixed(0)}°C smoke=${node.readings?.smoke?.toFixed(0)}ppm bat=${node.readings?.bat?.toFixed(0)}%` : ""}`}
       onClick={onClick}
+      title={`${DEVICE_LABELS[device.kind] ?? device.kind} ${device.id} · ${FAULT_LABEL[state] ?? state}`}
+      className="flex items-center gap-1 select-none cursor-grab active:cursor-grabbing"
+      style={{
+        padding: "2px 6px 2px 5px",
+        borderRadius: 999,
+        background: "rgba(0,0,0,0.62)",
+        border: `1px solid ${sounding ? "rgba(224,38,14,0.7)" : "rgba(255,255,255,0.14)"}`,
+        backdropFilter: "blur(8px)",
+        WebkitBackdropFilter: "blur(8px)",
+        opacity: dim ? 0.55 : 1,
+        whiteSpace: "nowrap",
+      }}
     >
-      {/* Anneau pulsé si sirène active */}
-      {isSiren && (
-        <div
-          className="absolute rounded-full border-2 border-red-500 animate-ping"
-          style={{ width: 36, height: 36, top: -6, left: "50%", transform: "translateX(-50%)", zIndex: 10 }}
-        />
-      )}
-
-      {/* Corps du marqueur */}
-      <div
-        className="w-6 h-6 rounded-full flex items-center justify-center border border-black/40 shadow-lg"
-        style={{ background: isOnline ? bg : "#374151", position: "relative", zIndex: 5 }}
-      >
-        <Icon className="w-3 h-3" style={{ color: isOnline ? color : "#9ca3af" }} />
-      </div>
-
-      {/* Mât vertical */}
-      <div
-        style={{
-          width: 2,
-          height: 36,
-          borderRadius: 1,
-          background: "linear-gradient(to bottom, rgba(255,255,255,0.28), rgba(255,255,255,0.03))",
-        }}
-      />
-
-      {/* Disque d'ombre au sol */}
-      <div
-        style={{
-          width: 14,
-          height: 5,
-          borderRadius: "50%",
-          background: "radial-gradient(ellipse at center, rgba(0,0,0,0.65) 0%, transparent 70%)",
-          marginTop: -1,
-        }}
-      />
+      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: LABEL_DOT[state] ?? "#474747" }} />
+      <span className="text-[9px] font-mono font-semibold tabular" style={{ color: "rgba(255,255,255,0.88)", letterSpacing: "0.02em" }}>
+        {device.id}
+      </span>
     </div>
   )
 }
@@ -469,22 +430,54 @@ interface Props {
   world: WorldState | null
   alertLevel: AlertLevelPayload
   sendCommand: (type: string, payload?: Record<string, unknown>) => void
+  /** false quand une page couvre la carte : animations suspendues */
+  active?: boolean
 }
 
-export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
+export function FireMap({ state, world, alertLevel, sendCommand, active = true }: Props) {
   const mapRef        = useRef<MapRef>(null)
   const containerRef  = useRef<HTMLDivElement>(null)
   const is3DRef       = useRef(true)
-  const diagLoggedRef = useRef(false)   // log diagnostic une seule fois
+  const markersRef    = useRef(new Map<string, MarkerInstance>())
+  const offsetsRef    = useRef(new Map<string, number>())
 
-  const [basemap, setBasemap] = useState<Basemap>("satellite")
-  const [is3D, setIs3D]       = useState(true)
-  const [showTruth, setShowTruth] = useState(true)
-  const [esriOk, setEsriOk]   = useState(true)
-  const [mapLoaded, setMapLoaded] = useState(false)
+  const quality       = useEffectsQuality()
+  const reducedMotion = useReducedMotion()
+  const showFps       = useShowFps()
+  const [fps, setFps] = useState<number | null>(null)
+
+  // Calque three.js + sol drapé : créés une fois, réinstallés à chaque changement de style
+  const fxRef = useRef<FireFxLayer | null>(null)
+  if (!fxRef.current) {
+    fxRef.current = new FireFxLayer(quality, {
+      onLabelOffsets: (offsets) => {
+        offsetsRef.current = offsets
+        for (const [id, px] of offsets) markersRef.current.get(id)?.setOffset([0, -Math.round(px) - 4])
+      },
+      onFps: (v) => setFps(v),
+    })
+  }
+  const groundRef = useRef<GroundOverlay | null>(null)
+  if (!groundRef.current) groundRef.current = new GroundOverlay()
+
+  const [basemap, setBasemap]     = useState<Basemap>("satellite")
+  const [pressedBtn, setPressedBtn] = useState<string | null>(null)
+
+  const pressSpring = (key: string, action: () => void) => {
+    action()
+    setPressedBtn(key)
+    setTimeout(() => setPressedBtn(null), 60)
+  }
+  const [is3D, setIs3D]             = useState(true)
+  const [showTruth, setShowTruth]   = useState(true)
+  const [esriOk, setEsriOk]         = useState(true)
+  const [mapLoaded, setMapLoaded]   = useState(false)
   const [selectedMarker, setSelectedMarker] = useState<{
     device: WorldDevice; node?: FireNode; x: number; y: number
   } | null>(null)
+  // Déplacements en attente de l'écho du simulateur (glisser-déposer optimiste)
+  const [moves, setMoves] = useState<Record<string, { lon: number; lat: number; until: number }>>({})
+  const [drag, setDrag] = useState<{ id: string; lon: number; lat: number } | null>(null)
 
   const prevConfirmedRef = useRef(false)
 
@@ -493,13 +486,29 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
   // -------------------------------------------------------------------------
   const mapStyle = useMemo(() => buildStyle(basemap, esriOk), [basemap, esriOk])
 
-  // -------------------------------------------------------------------------
-  // Terrain : exagération 2.2 pour relief très visible
-  // -------------------------------------------------------------------------
   const applyTerrain = useCallback((map: MapLibreMap, enable: boolean) => {
     try {
-      map.setTerrain(enable ? { source: "terrain-dem", exaggeration: 2.2 } : null)
+      map.setTerrain(enable ? { source: "terrain-dem", exaggeration: TERRAIN_EXAGGERATION } : null)
     } catch { /* style pas encore prêt */ }
+  }, [])
+
+  /**
+   * (Ré)installe les calques impératifs (three.js, sol drapé) ; idempotent.
+   * Le calque 3D doit rester le dernier : avec le relief, un calque drapé placé
+   * après lui serait redessiné par-dessus les effets.
+   */
+  const ensureFxLayers = useCallback((map: MapLibreMap) => {
+    // isStyleLoaded() reste faux tant que des tuiles chargent : on tente, le style
+    // lève une exception s'il n'est pas encore analysé (prochain styledata)
+    try {
+      groundRef.current?.attach(map, "gateways-fill")
+      if (!map.getLayer(FX_LAYER_ID) && fxRef.current) map.addLayer(fxRef.current)
+      const order = map.getLayersOrder()
+      const gi = order.indexOf(GROUND_LAYER)
+      const bi = order.indexOf("gateways-fill")
+      if (gi >= 0 && bi >= 0 && gi > bi) map.moveLayer(GROUND_LAYER, "gateways-fill")
+      if (order.length && order[order.length - 1] !== FX_LAYER_ID && map.getLayer(FX_LAYER_ID)) map.moveLayer(FX_LAYER_ID)
+    } catch { /* style en cours de chargement */ }
   }, [])
 
   // -------------------------------------------------------------------------
@@ -511,21 +520,16 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
 
     setMapLoaded(true)
     applyTerrain(map, is3DRef.current)
+    ensureFxLayers(map)
+    // Diagnostic (développement uniquement) : mesures de performance depuis la console
+    if (import.meta.env.DEV) (window as unknown as { __fw: unknown }).__fw = { map, fx: fxRef.current }
 
-    // Réappliquer le terrain à chaque changement de fond de carte
+    // Réappliquer le terrain et les calques à chaque changement de fond de carte
     map.on("style.load", () => {
       applyTerrain(map, is3DRef.current)
-
-      // Diagnostic affiché une seule fois en console
-      if (!diagLoggedRef.current) {
-        diagLoggedRef.current = true
-        console.log("[FireMap 3D] terrain:", JSON.stringify(map.getTerrain()))
-        try {
-          const elev = map.queryTerrainElevation([CENTER_LON, CENTER_LAT])
-          console.log("[FireMap 3D] altitude centre:", elev?.toFixed(0), "m")
-        } catch { /* tuiles pas encore chargées */ }
-      }
+      ensureFxLayers(map)
     })
+    map.on("styledata", () => ensureFxLayers(map))
 
     // Fallback Esri → EOX si erreur 403/CORS
     map.on("error", (e) => {
@@ -533,8 +537,27 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
         setEsriOk(false)
       }
     })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyTerrain])
+  }, [applyTerrain, ensureFxLayers])
+
+  // -------------------------------------------------------------------------
+  // Données → calque 3D (aucune animation sans donnée du monde)
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    fxRef.current?.setWorld(world)
+    groundRef.current?.update(world)
+    const map = mapRef.current?.getMap() as MapLibreMap | undefined
+    if (map) ensureFxLayers(map)
+  }, [world, ensureFxLayers])
+  useEffect(() => { fxRef.current?.setNodes(state.nodes) }, [state.nodes])
+  useEffect(() => { fxRef.current?.setWeather(state.weather) }, [state.weather])
+  useEffect(() => {
+    fxRef.current?.setTruthVisible(showTruth)
+    groundRef.current?.setVisible(showTruth)
+  }, [showTruth])
+  useEffect(() => { fxRef.current?.setQuality(quality) }, [quality])
+  useEffect(() => { fxRef.current?.setReducedMotion(reducedMotion) }, [reducedMotion])
+  useEffect(() => { fxRef.current?.setActive(active) }, [active])
+  useEffect(() => () => groundRef.current?.detach(), [])
 
   // -------------------------------------------------------------------------
   // 2D / 3D toggle — animation 1,2 s, désactive le terrain en 2D
@@ -546,11 +569,12 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
     is3DRef.current = next
     setIs3D(next)
     applyTerrain(map, next)
+    const duration = reducedMotion ? 0 : 1200
     map.easeTo(next
-      ? { pitch: 72, bearing: -30, duration: 1200 }
-      : { pitch: 0,  bearing: 0,   duration: 1200 }
+      ? { pitch: 72, bearing: -30, duration }
+      : { pitch: 0,  bearing: 0,   duration }
     )
-  }, [applyTerrain])
+  }, [applyTerrain, reducedMotion])
 
   // -------------------------------------------------------------------------
   // flyTo cinématique à la confirmation du feu
@@ -560,23 +584,37 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
     if (confirmed && !prevConfirmedRef.current && state.incident?.position) {
       const { lat, lon } = state.incident.position
       const wind = alertLevel.wind
+      // Vue perpendiculaire au vent (le panache et le front se couchent à l'écran),
+      // du côté où le relief derrière la caméra est le plus bas (crête masquante évitée)
+      let bearing = -25
+      if (wind) {
+        const map = mapRef.current?.getMap() as MapLibreMap | undefined
+        const behind = (b: number) => {
+          const r = (b * Math.PI) / 180, d = 2200
+          const pLat = lat - (d * Math.cos(r)) / 111_320
+          const pLon = lon - (d * Math.sin(r)) / (111_320 * Math.cos((lat * Math.PI) / 180))
+          return map?.queryTerrainElevation([pLon, pLat]) ?? 0
+        }
+        const a = (wind.from + 90) % 360, b = (wind.from + 270) % 360
+        bearing = behind(a) <= behind(b) ? a : b
+      }
       mapRef.current?.flyTo({
         center: [lon, lat],
-        zoom: 14.5,
-        pitch: 70,
-        bearing: wind ? -(wind.from) % 360 : -25,
-        duration: 2500,
+        zoom: 14,
+        pitch: 60,
+        bearing,
+        duration: reducedMotion ? 0 : 2500,
         essential: true,
       })
     }
     prevConfirmedRef.current = confirmed
-  }, [alertLevel.level, alertLevel.wind, state.incident?.position])
+  }, [alertLevel.level, alertLevel.wind, state.incident?.position, reducedMotion])
 
   // -------------------------------------------------------------------------
-  // Rotation lente automatique (s'arrête dès interaction)
+  // Rotation lente automatique (s'arrête dès interaction, jamais pendant un vol)
   // -------------------------------------------------------------------------
   useEffect(() => {
-    if (!mapLoaded) return
+    if (!mapLoaded || reducedMotion || !active) return
     const map = mapRef.current?.getMap() as MapLibreMap | undefined
     const container = containerRef.current
     if (!map || !container) return
@@ -584,16 +622,17 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
     let frameId: number
     let lastInteraction = Date.now()
 
-    // Écouter sur le conteneur DOM (capte aussi les clics sur les marqueurs)
     const onInteract = () => { lastInteraction = Date.now() }
     container.addEventListener("mousedown", onInteract, { passive: true })
     container.addEventListener("touchstart", onInteract, { passive: true })
     map.on("wheel", onInteract)
+    map.on("movestart", onInteract)
 
     const tick = () => {
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      if (is3DRef.current && Date.now() - lastInteraction > 5000) {
+      // setBearing interrompt les animations en cours (flyTo, easeTo) : on attend qu'elles finissent
+      if (is3DRef.current && !map.isMoving() && Date.now() - lastInteraction > 5000) {
         map.setBearing((map.getBearing() + 0.015) % 360)
+        lastInteraction = Date.now() - 5001
       }
       frameId = requestAnimationFrame(tick)
     }
@@ -604,25 +643,36 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
       container.removeEventListener("mousedown", onInteract)
       container.removeEventListener("touchstart", onInteract)
       map.off("wheel", onInteract)
+      map.off("movestart", onInteract)
     }
-  }, [mapLoaded])
+  }, [mapLoaded, reducedMotion, active])
 
   // -------------------------------------------------------------------------
   // GeoJSON (recalculé uniquement si les données changent)
   // -------------------------------------------------------------------------
-  const fireGeoJSON   = useMemo(() => fireCellsGeoJSON(world),               [world])
-  const zonesGJ       = useMemo(() => zonesGeoJSON(state.incident?.zones),   [state.incident?.zones])
-  const uncertaintyGJ = useMemo(() => uncertaintyGeoJSON(state.incident?.position), [state.incident?.position])
-  const gatewayGJ     = useMemo(() => gatewayGeoJSON(world?.devices),        [world?.devices])
-  const cameraGJ      = useMemo(() => cameraGeoJSON(world?.devices),         [world?.devices])
-  const radioGJ       = useMemo(() => radioLinksGeoJSON(world?.devices),     [world?.devices])
-
-  // Nœud par ID pour enrichir les marqueurs
   const nodeById = useMemo(() => {
     const m = new Map<string, FireNode>()
     state.nodes.forEach((n) => m.set(n.id, n))
     return m
   }, [state.nodes])
+
+  // Appareils affichés : positions glissées en attente de confirmation
+  const worldDevices = useMemo(() => {
+    const now = Date.now()
+    return (world?.devices ?? []).map((d) => {
+      if (drag?.id === d.id) return { ...d, lon: drag.lon, lat: drag.lat }
+      const mv = moves[d.id]
+      if (!mv || now > mv.until) return d
+      const confirmed = Math.abs(mv.lon - d.lon) < 2e-5 && Math.abs(mv.lat - d.lat) < 2e-5
+      return confirmed ? d : { ...d, lon: mv.lon, lat: mv.lat }
+    })
+  }, [world?.devices, moves, drag])
+
+  const zonesGJ       = useMemo(() => zonesGeoJSON(state.incident?.zones),   [state.incident?.zones])
+  const uncertaintyGJ = useMemo(() => uncertaintyGeoJSON(state.incident?.position), [state.incident?.position])
+  const gatewayGJ     = useMemo(() => gatewayGeoJSON(worldDevices),        [worldDevices])
+  const cameraGJ      = useMemo(() => cameraGeoJSON(worldDevices),         [worldDevices])
+  const radioGJ       = useMemo(() => radioLinksGeoJSON(worldDevices, nodeById), [worldDevices, nodeById])
 
   // -------------------------------------------------------------------------
   // Handlers drag-and-drop depuis la palette
@@ -646,10 +696,6 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
     sendCommand("fire_start", { lat: e.lngLat.lat, lon: e.lngLat.lng })
   }, [sendCommand])
 
-  // -------------------------------------------------------------------------
-  // Devices à afficher (world.devices prioritaire, sinon state.nodes)
-  // -------------------------------------------------------------------------
-  const worldDevices = world?.devices ?? []
   const orphanNodes  = state.nodes.filter((n) => !worldDevices.find((d) => d.id === n.id))
   const incident     = state.incident
 
@@ -694,33 +740,16 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
             paint={{ "line-color": "#06b6d4", "line-opacity": 0.5, "line-width": 1 }} />
         </Source>
 
-        {/* ── Liens radio capteur → passerelle ── */}
+        {/* ── Liens radio capteur → passerelle (couleur selon le RSSI) ── */}
         <Source id="radio" type="geojson" data={radioGJ}>
           <Layer id="radio-lines" type="line"
             paint={{
-              "line-color": ["case",
-                ["==", ["get", "fault"], "ok"],        "#22c55e",
-                ["==", ["get", "fault"], "hors_ligne"], "#52525b",
-                "#eab308"],
-              "line-opacity": 0.4,
+              "line-color": ["step", ["get", "rssi"], "#6B2510", -118, "#E0260E", -105, "#FF5A1F"],
+              "line-opacity": ["case", ["==", ["get", "live"], 1], 0.45, 0.15],
               "line-width": 0.8,
               "line-dasharray": [2, 2],
             }} />
         </Source>
-
-        {/* ── Vérité terrain : cellules en feu ── */}
-        {showTruth && world?.fires?.length ? (
-          <Source id="fire-cells" type="geojson" data={fireGeoJSON}>
-            <Layer id="fire-cells-extrusion" type="fill-extrusion"
-              paint={{
-                "fill-extrusion-color": ["interpolate", ["linear"], ["get", "height"],
-                  40, "#f97316", 80, "#ef4444", 100, "#fbbf24"],
-                "fill-extrusion-height": ["get", "height"],
-                "fill-extrusion-base": 0,
-                "fill-extrusion-opacity": 0.85,
-              }} />
-          </Source>
-        ) : null}
 
         {/* ── Zones de propagation 15/30/60 min ── */}
         <Source id="zones" type="geojson" data={zonesGJ}>
@@ -747,19 +776,36 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
             paint={{ "line-color": "#ef4444", "line-opacity": 0.5, "line-width": 1.5, "line-dasharray": [3, 2] }} />
         </Source>
 
-        {/* ── Marqueurs : appareils du simulateur (mât + ombre) ── */}
+        {/* ── Étiquettes des modèles 3D (glissables) ── */}
         {worldDevices.map((device) => {
           const node = nodeById.get(device.id)
           return (
             <Marker
               key={device.id}
+              ref={(m) => {
+                if (m) {
+                  markersRef.current.set(device.id, m)
+                  const px = offsetsRef.current.get(device.id)
+                  if (px !== undefined) m.setOffset([0, -Math.round(px) - 4])
+                } else markersRef.current.delete(device.id)
+              }}
               latitude={device.lat}
               longitude={device.lon}
-              anchor="top"
+              anchor="bottom"
               draggable
-              onDragEnd={(e) => sendCommand("device_move", { id: device.id, lat: e.lngLat.lat, lon: e.lngLat.lng })}
+              onDrag={(e) => {
+                fxRef.current?.moveDevice(device.id, e.lngLat.lng, e.lngLat.lat)
+                setDrag({ id: device.id, lon: e.lngLat.lng, lat: e.lngLat.lat })
+              }}
+              onDragEnd={(e) => {
+                const { lng, lat } = e.lngLat
+                fxRef.current?.moveDevice(device.id, lng, lat)
+                setDrag(null)
+                setMoves((m) => ({ ...m, [device.id]: { lon: lng, lat, until: Date.now() + 4000 } }))
+                sendCommand("device_move", { id: device.id, lat, lon: lng })
+              }}
             >
-              <DeviceMarker
+              <DeviceLabel
                 device={device}
                 node={node}
                 onClick={(e) => {
@@ -804,7 +850,7 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
       {selectedMarker && (
         <DeviceTooltip
           device={selectedMarker.device}
-          node={selectedMarker.node}
+          node={nodeById.get(selectedMarker.device.id) ?? selectedMarker.node}
           onClose={() => setSelectedMarker(null)}
           x={selectedMarker.x}
           y={selectedMarker.y}
@@ -828,30 +874,41 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
           boxShadow: "0 2px 12px rgba(0,0,0,0.3)",
         }}
       >
-        {(["satellite", "topo", "dark"] as Basemap[]).map((b) => (
-          <button
-            key={b}
-            onClick={() => setBasemap(b)}
-            title={b === "satellite" ? "Satellite Esri" : b === "topo" ? "OpenTopoMap" : "CARTO Sombre"}
-            className="px-2.5 py-1 text-[10px] rounded-[8px] transition-all font-medium"
-            style={{
-              background: basemap === b ? "rgba(255,255,255,0.14)" : "transparent",
-              color: basemap === b ? "#ffffff" : "rgba(235,235,245,0.4)",
-            }}
-          >
-            {b === "satellite" ? "Satellite" : b === "topo" ? "Topo" : "Sombre"}
-          </button>
-        ))}
+        {(["satellite", "topo", "dark"] as Basemap[]).map((b) => {
+          const pressing = pressedBtn === b
+          return (
+            <button
+              key={b}
+              onPointerDown={() => pressSpring(b, () => setBasemap(b))}
+              title={b === "satellite" ? "Satellite Esri" : b === "topo" ? "OpenTopoMap" : "OSM sombre"}
+              className="px-2.5 py-1 text-[10px] rounded-[8px] font-medium"
+              style={{
+                background: basemap === b ? "rgba(255,255,255,0.14)" : "transparent",
+                color: basemap === b ? "#ffffff" : "rgba(235,235,245,0.4)",
+                transform: pressing ? "scale(0.78)" : "scale(1)",
+                transition: pressing
+                  ? "transform 55ms ease-in, background 0.15s ease, color 0.15s ease"
+                  : "transform 480ms cubic-bezier(0.34,1.56,0.64,1), background 0.2s ease, color 0.2s ease",
+              }}
+            >
+              {b === "satellite" ? "Satellite" : b === "topo" ? "Topo" : "Sombre"}
+            </button>
+          )
+        })}
 
         <div className="w-px h-4 mx-0.5" style={{ background: "rgba(255,255,255,0.10)" }} />
 
         <button
-          onClick={handleToggle3D}
+          onPointerDown={() => pressSpring("3d", handleToggle3D)}
           title={is3D ? "Vue 2D" : "Vue 3D terrain"}
-          className="px-2.5 py-1 text-[10px] rounded-[8px] transition-all font-medium flex items-center gap-1"
+          className="px-2.5 py-1 text-[10px] rounded-[8px] font-medium flex items-center gap-1"
           style={{
             background: is3D ? "rgba(100,210,255,0.15)" : "transparent",
             color: is3D ? "#64d2ff" : "rgba(235,235,245,0.4)",
+            transform: pressedBtn === "3d" ? "scale(0.78)" : "scale(1)",
+            transition: pressedBtn === "3d"
+              ? "transform 55ms ease-in, background 0.15s ease, color 0.15s ease"
+              : "transform 480ms cubic-bezier(0.34,1.56,0.64,1), background 0.2s ease, color 0.2s ease",
           }}
         >
           <Mountain className="w-3 h-3" />
@@ -861,18 +918,33 @@ export function FireMap({ state, world, alertLevel, sendCommand }: Props) {
         <div className="w-px h-4 mx-0.5" style={{ background: "rgba(255,255,255,0.10)" }} />
 
         <button
-          onClick={() => setShowTruth(!showTruth)}
-          title={showTruth ? "Masquer la vérité terrain" : "Afficher la vérité terrain"}
-          className="px-2.5 py-1 text-[10px] rounded-[8px] transition-all font-medium flex items-center gap-1"
+          onPointerDown={() => pressSpring("terrain", () => setShowTruth((v) => !v))}
+          title={showTruth ? "Masquer la vérité terrain (feu, fumée, sol brûlé)" : "Afficher la vérité terrain"}
+          className="px-2.5 py-1 text-[10px] rounded-[8px] font-medium flex items-center gap-1"
           style={{
             background: showTruth ? "rgba(255,90,31,0.15)" : "transparent",
             color: showTruth ? "#ff9f0a" : "rgba(235,235,245,0.4)",
+            transform: pressedBtn === "terrain" ? "scale(0.78)" : "scale(1)",
+            transition: pressedBtn === "terrain"
+              ? "transform 55ms ease-in, background 0.15s ease, color 0.15s ease"
+              : "transform 480ms cubic-bezier(0.34,1.56,0.64,1), background 0.2s ease, color 0.2s ease",
           }}
         >
           {showTruth ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
-          Terrain
+          Vérité terrain
         </button>
       </div>
+
+      {/* Compteur d'images par seconde (Paramètres → Qualité des effets) */}
+      {showFps && fps !== null && (
+        <div
+          className="absolute bottom-6 left-1/2 translate-x-28 text-[10px] font-mono tabular px-2 py-0.5 rounded-full pointer-events-none"
+          style={{ color: fps >= 50 ? "#ffffff" : "#FF5A1F", background: "rgba(0,0,0,0.55)" }}
+          data-testid="fps"
+        >
+          {fps} FPS
+        </div>
+      )}
 
       {/* Légende compacte – coin bas droit */}
       <div

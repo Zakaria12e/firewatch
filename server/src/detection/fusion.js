@@ -10,6 +10,32 @@
 import { distance, bearing } from "../geo.js"
 
 const WEIGHTS = { flame: 40, hotspot: 45, smoke: 25, co: 20, tempRise: 15, humDrop: 10 }
+const LEVELS = { confirm: 75, preAlert: 50, suspicion: 20 }
+
+const num = (v, d) => (Number.isFinite(v) ? v : d)
+
+/** Poids effectifs : constantes par défaut ou page Paramètres (weightFlame…). */
+function effectiveWeights(f) {
+  if (!f) return WEIGHTS
+  return {
+    flame:    num(f.weightFlame, WEIGHTS.flame),
+    hotspot:  num(f.weightThermal, WEIGHTS.hotspot),
+    smoke:    num(f.weightSmoke, WEIGHTS.smoke),
+    co:       num(f.weightCO, WEIGHTS.co),
+    tempRise: num(f.weightTempRise, WEIGHTS.tempRise),
+    humDrop:  num(f.weightHumDrop, WEIGHTS.humDrop),
+  }
+}
+
+/** Seuils de niveau effectifs (minConfirmScore, minPreAlertScore, minSuspicionScore). */
+function effectiveLevels(f) {
+  if (!f) return LEVELS
+  return {
+    confirm:   num(f.minConfirmScore, LEVELS.confirm),
+    preAlert:  num(f.minPreAlertScore, LEVELS.preAlert),
+    suspicion: num(f.minSuspicionScore, LEVELS.suspicion),
+  }
+}
 
 /**
  * Calcule le score de confiance (0-100) pour un groupe de nœuds suspects.
@@ -17,15 +43,16 @@ const WEIGHTS = { flame: 40, hotspot: 45, smoke: 25, co: 20, tempRise: 15, humDr
  * @param {object[]} suspects  – nœuds avec {lat, lon, indicators, readings, z}
  * @param {object}   wind      – { speed, from }   (from = d'où vient le vent, degrés)
  * @param {object}   riskIndex – { value: 0-100 } (indice météo)
+ * @param {object}   [fusion]  – poids de la page Paramètres (optionnel)
  * @returns {number}           – score 0-100
  */
-export function fusionScore(suspects, wind, riskIndex) {
+export function fusionScore(suspects, wind, riskIndex, fusion = undefined) {
   if (!suspects.length) return 0
 
   // 1. Score brut par indicateur (pondéré par le nombre de nœuds qui le voient)
   let raw = 0
   let total_weight = 0
-  for (const [key, w] of Object.entries(WEIGHTS)) {
+  for (const [key, w] of Object.entries(effectiveWeights(fusion))) {
     total_weight += w
     const count = suspects.filter((n) => n.indicators?.[key]).length
     if (count > 0) raw += w * Math.min(1, count / suspects.length + 0.3)
@@ -87,15 +114,16 @@ function computeWindCoherence(suspects, wind) {
  * @param {object[]} suspects
  * @returns {"veille"|"vigilance"|"suspicion"|"pré-alerte"|"feu_confirmé"}
  */
-export function alertLevel(score, suspects, riskIndex) {
+export function alertLevel(score, suspects, riskIndex, fusion = undefined) {
+  const lv = effectiveLevels(fusion)
   // Feu confirmé immédiat : flamme + fumée, ou thermique + fumée
   const hasFlame = suspects.some((n) => n.indicators?.flame)
   const hasHot   = suspects.some((n) => n.indicators?.hotspot)
   const hasSmoke = suspects.some((n) => n.indicators?.smoke)
   if ((hasFlame && hasSmoke) || (hasHot && hasSmoke)) return "feu_confirmé"
-  if (score >= 75) return "feu_confirmé"
-  if (score >= 50) return "pré-alerte"
-  if (score >= 20) return "suspicion"
+  if (score >= lv.confirm) return "feu_confirmé"
+  if (score >= lv.preAlert) return "pré-alerte"
+  if (score >= lv.suspicion) return "suspicion"
   if ((riskIndex?.value ?? 0) >= 60) return "vigilance"
   return "veille"
 }

@@ -46,6 +46,7 @@ export default function App() {
         world={world}
         alertLevel={alertLevel}
         sendCommand={sendCommand}
+        active={page === "ops"}
       />
 
       {/* Chrome flottant */}

@@ -1,7 +1,8 @@
 /**
  * Paramètres de détection configurables depuis /api/settings.
  * Les valeurs par défaut correspondent aux constantes dures dans indicators.js / fusion.js.
- * Lorsqu'on les modifie ici, le pipeline les lira au prochain appel via getSettings().
+ * index.js les transmet au pipeline (context.settings) à chaque évaluation :
+ * une modification est prise en compte immédiatement.
  */
 
 const defaults = {
@@ -34,6 +35,7 @@ const defaults = {
 let current = JSON.parse(JSON.stringify(defaults))
 
 export const getSettings = () => JSON.parse(JSON.stringify(current))
+export const getDefaults = () => JSON.parse(JSON.stringify(defaults))
 
 export function updateSettings(patch) {
   if (patch.thresholds) Object.assign(current.thresholds, patch.thresholds)
