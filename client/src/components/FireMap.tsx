@@ -36,7 +36,11 @@ type Basemap = "satellite" | "topo" | "dark"
 function buildStyle(basemap: Basemap, esriOk: boolean): object {
   const baseSource = basemap === "satellite"
     ? { type: "raster", tiles: esriOk ? ESRI_SATELLITE : EOX_CLOUDLESS, tileSize: 256,
-        attribution: esriOk ? "Imagerie © Esri, Maxar, Earthstar Geographics" : "© EOX Sentinel-2", maxzoom: 19 }
+        attribution: esriOk ? "Imagerie © Esri, Maxar, Earthstar Geographics" : "© EOX Sentinel-2",
+        // Zoom max réel de l'imagerie sur le Rif : Esri renvoie une tuile grise « Map data not
+        // yet available » au zoom 19, EOX (Sentinel-2, 10 m) n'apporte rien après 15.
+        // Au-delà, MapLibre agrandit la dernière tuile disponible au lieu de l'afficher en gris.
+        maxzoom: esriOk ? 18 : 15 }
     : basemap === "topo"
     ? { type: "raster", tiles: OPENTOPO, tileSize: 256, attribution: "© OpenTopoMap", maxzoom: 17 }
     // Dark : OSM en fantôme sur fond #030303 → "ops nocturne" sans API key
@@ -655,6 +659,7 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
           bearing:   -30,
         }}
         maxPitch={85}
+        maxZoom={17.5}
         style={{ width: "100%", height: "100%" }}
         onLoad={handleMapLoad}
         onDblClick={handleDblClick}
