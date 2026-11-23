@@ -3,6 +3,7 @@ import type { LucideIcon } from "lucide-react"
 import type { DeviceKind } from "@/types"
 import { C, alpha, KIND_META } from "@/lib/palette"
 import { SegmentedControl } from "./SegmentedControl"
+import { fireTool, useFireSize, FIRE_SIZE_LABEL, type FireSize } from "@/lib/fireTool"
 
 interface PaletteItem {
   kind: DeviceKind | "__fire__" | "__water__"
@@ -38,13 +39,14 @@ const DEVICES: PaletteItem[] = (Object.keys(KIND_META) as DeviceKind[]).map((k) 
 }))
 
 const TOOLS: PaletteItem[] = [
-  { kind: "__fire__",  label: "Feu",      model: "Allumer",     tooltip: "Glisser sur la carte pour démarrer un feu", Icon: Flame,    accent: C.fire },
+  { kind: "__fire__",  label: "Feu",      model: "Allumer",     tooltip: "Glisser sur la carte : point de départ (3 s pour le déplacer ou l'annuler). Maj + glisser sur la carte : ligne de feu", Icon: Flame,    accent: C.fire },
   { kind: "__water__", label: "Canadair", model: "Larguer eau", tooltip: "Larguer de l'eau – éteint les cellules proches", Icon: Droplets },
 ]
 
 function DeviceCard({ item }: { item: PaletteItem }) {
   const handleDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData("kind", item.kind)
+    if (item.kind === "__fire__") e.dataTransfer.setData("radius", String(fireTool.radius))
     e.dataTransfer.effectAllowed = "copy"
   }
   const accent = item.accent ?? "#ffffff"
@@ -64,6 +66,21 @@ function DeviceCard({ item }: { item: PaletteItem }) {
         <div className="text-[10px] font-medium" style={{ color: C.text }}>{item.label}</div>
         <div className="text-[8px] mt-0.5 font-mono" style={{ color: C.text4 }}>{item.model}</div>
       </div>
+    </div>
+  )
+}
+
+const SIZE_OPTIONS = (["petit", "moyen", "grand"] as FireSize[]).map((v) => ({ value: v, label: FIRE_SIZE_LABEL[v] }))
+
+/** Intensité du départ de feu, choisie avant de le déposer. */
+function FireSizePicker() {
+  const size = useFireSize()
+  return (
+    <div className="mt-1.5">
+      <SegmentedControl options={SIZE_OPTIONS} value={size} onChange={(v) => fireTool.setSize(v as FireSize)} />
+      <p className="text-[8.5px] mt-1 px-0.5 leading-snug" style={{ color: C.text4 }}>
+        {size === "petit" ? "Une cellule (50 m)" : size === "moyen" ? "Rayon 75 m" : "Rayon 150 m"} · Maj + glisser sur la carte : ligne de feu
+      </p>
     </div>
   )
 }
@@ -134,6 +151,7 @@ export function DevicePalette({ weatherMode = "reel", onWeatherModeChange, onWea
         <div className="grid grid-cols-2 gap-1.5">
           {TOOLS.map((item) => <DeviceCard key={item.kind} item={item} />)}
         </div>
+        <FireSizePicker />
       </div>
 
       <div className="mx-3 my-1 h-px shrink-0" style={{ background: C.line }} />

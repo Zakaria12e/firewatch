@@ -40,6 +40,7 @@ let _pendingTimeline = []   // événements de niveau avant confirmation
 let worldState = null            // dernier snapshot reçu de /api/sim/world
 let worldCommandQueue = []       // ordres en attente pour le moteur
 let lastWorldAt = 0              // timestamp du dernier POST /api/sim/world
+let resetAt = 0                  // réinitialisation : les mesures antérieures sont ignorées
 
 const sirenFor = (node) => {
   if (sirenOverride !== null) return sirenOverride
@@ -172,6 +173,10 @@ app.get("/api/world", (_req, res) => res.json(worldState || {}))
 app.post("/api/world/command", (req, res) => {
   const cmd = req.body
   if (!cmd || !cmd.type) return res.status(400).json({ error: "type manquant" })
+  if (cmd.type === "reset") {
+    resetAll()
+    return res.json({ ok: true, queued: worldCommandQueue.length })
+  }
   worldCommandQueue.push(cmd)
   res.json({ ok: true, queued: worldCommandQueue.length })
 })
@@ -183,13 +188,20 @@ app.post("/api/scenario/fire", (req, res) => {
   res.json({ ok: true })
 })
 
-app.post("/api/scenario/reset", (_req, res) => {
+/** Réinitialisation : monde, incident en cours et mesures antérieures ignorées. */
+function resetAll() {
   worldCommandQueue.push({ type: "reset" })
+  resetAt = Date.now()
+  lastSuspectAt = 0
   sirenOverride = null
-  if (incident) closeIncident("réinitialisé")
+  if (incident?.status === "actif") closeIncident("réinitialisé")
   recordFireReset()
   _pendingTimeline = []
   _prevLevel = "veille"
+}
+
+app.post("/api/scenario/reset", (_req, res) => {
+  resetAll()
   res.json({ ok: true })
 })
 
@@ -235,7 +247,10 @@ async function runDetection() {
     burnZones: (settings.burnZones || []).map((z) => z.polygon).filter((p) => Array.isArray(p) && p.length >= 3),
     settings: { thresholds: settings.thresholds, fusion: settings.fusion },
   }
-  const measured = [...nodes.values()].filter((n) => n.readings && Object.keys(n.readings).length)
+  // Nœuds qui ont des mesures, reçues après la dernière réinitialisation (sinon les
+  // dernières mesures du feu précédent rouvriraient aussitôt l'incident)
+  const measured = [...nodes.values()].filter((n) =>
+    n.readings && Object.keys(n.readings).length && n.ts > resetAt)
   const result = evaluate(measured, now, detContext)
   if (result.suspects.length) lastSuspectAt = now
 

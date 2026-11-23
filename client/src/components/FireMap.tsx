@@ -1,6 +1,6 @@
 import { useRef, useCallback, useMemo, useEffect, useState } from "react"
 import ReactMap, { Marker, Source, Layer, type MapRef } from "react-map-gl/maplibre"
-import type { Map as MapLibreMap, MapLayerMouseEvent, Marker as MarkerInstance } from "maplibre-gl"
+import type { Map as MapLibreMap, MapLayerMouseEvent, MapMouseEvent, Marker as MarkerInstance } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
 import type { FireWatchState, WorldState, AlertLevelPayload, FireNode, WorldDevice } from "@/types"
 import type { Feature, FeatureCollection, Polygon } from "geojson"
@@ -11,6 +11,12 @@ import { FireFxLayer, FX_LAYER_ID } from "@/map3d/FireFxLayer"
 import { GroundOverlay, GROUND_LAYER } from "@/map3d/groundOverlay"
 import { useEffectsQuality, useReducedMotion, useShowFps } from "@/map3d/quality"
 import { GATEWAY_RANGE_M } from "@/map3d/fx/devices"
+import { fireTool } from "@/lib/fireTool"
+import { IgnitionMarker, MapContextMenu } from "./FireIgnition"
+import {
+  ignitionGeoJSON, movePending, simplifyLine, lineLengthM, fireNear, fireNearScreen,
+  type PendingFire, type MapMenuState,
+} from "@/lib/ignition"
 
 // ---------------------------------------------------------------------------
 // Constantes de tuiles
@@ -396,6 +402,37 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
 
   const prevConfirmedRef = useRef(false)
 
+  // Départ de feu en attente (compte à rebours), tracé Maj + glisser, menu contextuel
+  const [pending, setPending] = useState<PendingFire | null>(null)
+  const [draft, setDraft] = useState<[number, number][] | null>(null)
+  const [menu, setMenu] = useState<MapMenuState | null>(null)
+  const pendingIdRef = useRef(0)
+  const worldRef = useRef(world)
+  useEffect(() => { worldRef.current = world }, [world])
+
+  const startPoint = useCallback((lat: number, lon: number, radius = fireTool.radius) => {
+    setPending({ id: ++pendingIdRef.current, kind: "point", lat, lon, radius })
+  }, [])
+
+  const firePending = useCallback(() => {
+    setPending((p) => {
+      if (p?.kind === "point") sendCommand("fire_start", { lat: p.lat, lon: p.lon, radius: p.radius })
+      else if (p?.kind === "line") sendCommand("fire_line", { points: p.points })
+      return null
+    })
+  }, [sendCommand])
+
+  // Échap : annule le départ en attente et ferme le menu
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return
+      setPending(null)
+      setMenu(null)
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [])
+
   // -------------------------------------------------------------------------
   // Style de fond (reconstruit seulement si basemap ou esriOk change)
   // -------------------------------------------------------------------------
@@ -488,6 +525,53 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
       : { pitch: 0,  bearing: 0,   duration }
     )
   }, [applyTerrain, reducedMotion])
+
+  // -------------------------------------------------------------------------
+  // Maj + glisser : ligne de feu tracée à main levée
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (!mapLoaded) return
+    const map = mapRef.current?.getMap() as MapLibreMap | undefined
+    if (!map) return
+    let pts: [number, number][] | null = null
+    let lastPx: [number, number] = [0, 0]
+    const down = (e: MapMouseEvent) => {
+      if (!e.originalEvent.shiftKey || e.originalEvent.button !== 0) return
+      e.preventDefault()
+      map.dragPan.disable()
+      pts = [[e.lngLat.lat, e.lngLat.lng]]
+      lastPx = [e.point.x, e.point.y]
+      setMenu(null)
+      setDraft(pts)
+    }
+    const move = (e: MapMouseEvent) => {
+      if (!pts) return
+      if (Math.hypot(e.point.x - lastPx[0], e.point.y - lastPx[1]) < 6) return
+      lastPx = [e.point.x, e.point.y]
+      pts = [...pts, [e.lngLat.lat, e.lngLat.lng]]
+      setDraft(pts)
+    }
+    const up = () => {
+      if (!pts) return
+      const line = simplifyLine(pts)
+      pts = null
+      map.dragPan.enable()
+      setDraft(null)
+      if (line.length >= 2 && lineLengthM(line) >= 60) {
+        setPending({ id: ++pendingIdRef.current, kind: "line", points: line })
+      } else {
+        startPoint(line[0][0], line[0][1])
+      }
+    }
+    map.on("mousedown", down)
+    map.on("mousemove", move)
+    window.addEventListener("mouseup", up)
+    return () => {
+      map.off("mousedown", down)
+      map.off("mousemove", move)
+      window.removeEventListener("mouseup", up)
+    }
+  }, [mapLoaded, startPoint])
 
   // -------------------------------------------------------------------------
   // Boussole : suit le cap de la carte sans re-rendu React
@@ -625,17 +709,34 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
     const rect = e.currentTarget.getBoundingClientRect()
     const lngLat = mapRef.current.unproject([e.clientX - rect.left, e.clientY - rect.top])
     if (kind === "__fire__") {
-      sendCommand("fire_start", { lat: lngLat.lat, lon: lngLat.lng })
+      // Point de départ en attente : 3 s pour le déplacer ou l'annuler
+      const r = Number(e.dataTransfer.getData("radius"))
+      startPoint(lngLat.lat, lngLat.lng, Number.isFinite(r) ? r : fireTool.radius)
     } else if (kind === "__water__") {
       sendCommand("water", { lat: lngLat.lat, lon: lngLat.lng, radius: 150 })
     } else {
       sendCommand("device_add", { kind, lat: lngLat.lat, lon: lngLat.lng })
     }
-  }, [sendCommand])
+  }, [sendCommand, startPoint])
 
   const handleDblClick = useCallback((e: MapLayerMouseEvent) => {
-    sendCommand("fire_start", { lat: e.lngLat.lat, lon: e.lngLat.lng })
-  }, [sendCommand])
+    startPoint(e.lngLat.lat, e.lngLat.lng)
+  }, [startPoint])
+
+  // Clic droit : actions sur un feu (Canadair, extinction) ou sur un point de la carte
+  const handleContextMenu = useCallback((e: MapLayerMouseEvent) => {
+    e.preventDefault()
+    const { lat, lng } = e.lngLat
+    setSelectedMarker(null)
+    const box = e.target.getContainer()
+    setMenu({
+      x: e.point.x, y: e.point.y, w: box.clientWidth, h: box.clientHeight,
+      lat, lon: lng,
+      onFire: fireNearScreen(e.target, worldRef.current, e.point.x, e.point.y) || fireNear(worldRef.current, lat, lng),
+    })
+  }, [])
+
+  const ignitionGJ = useMemo(() => ignitionGeoJSON(pending, draft), [pending, draft])
 
   const orphanNodes  = state.nodes.filter((n) => !worldDevices.find((d) => d.id === n.id))
   const incident     = state.incident
@@ -646,7 +747,8 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
       className="absolute inset-0 overflow-hidden"
       onDragOver={(e) => e.preventDefault()}
       onDrop={handleDrop}
-      onClick={() => setSelectedMarker(null)}
+      onClick={() => { setSelectedMarker(null); setMenu(null) }}
+      onContextMenu={(e) => e.preventDefault()}
     >
       <ReactMap
         ref={mapRef}
@@ -663,6 +765,10 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
         style={{ width: "100%", height: "100%" }}
         onLoad={handleMapLoad}
         onDblClick={handleDblClick}
+        onContextMenu={handleContextMenu}
+        onMoveStart={(e) => { if (e.originalEvent) setMenu(null) }}
+        boxZoom={false}
+        doubleClickZoom={false}
       >
         {/* ── Couverture passerelles ── */}
         <Source id="gateways" type="geojson" data={gatewayGJ}>
@@ -715,6 +821,32 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
           <Layer id="uncertainty-outline" type="line"
             paint={{ "line-color": "#FF5A1F", "line-opacity": 0.7, "line-width": 1.5, "line-dasharray": [3, 2] }} />
         </Source>
+
+        {/* ── Départ de feu en attente : cercle d'allumage ou ligne, drapés sur le relief ── */}
+        <Source id="ignition" type="geojson" data={ignitionGJ}>
+          <Layer id="ignition-fill" type="fill" filter={["==", ["get", "part"], "area"]}
+            paint={{ "fill-color": "#FF5A1F", "fill-opacity": 0.2 }} />
+          <Layer id="ignition-glow" type="line" filter={["!=", ["get", "part"], "draft"]}
+            layout={{ "line-cap": "round", "line-join": "round" }}
+            paint={{ "line-color": "#FF5A1F", "line-opacity": 0.28, "line-width": 10, "line-blur": 6 }} />
+          <Layer id="ignition-line" type="line" filter={["!=", ["get", "part"], "draft"]}
+            layout={{ "line-cap": "round", "line-join": "round" }}
+            paint={{ "line-color": "#FF5A1F", "line-width": ["case", ["==", ["get", "part"], "line"], 3.5, 2] }} />
+          <Layer id="ignition-draft" type="line" filter={["==", ["get", "part"], "draft"]}
+            layout={{ "line-cap": "round", "line-join": "round" }}
+            paint={{ "line-color": "#FF5A1F", "line-width": 2.5, "line-dasharray": [1.5, 1.5] }} />
+        </Source>
+
+        {pending && (
+          <IgnitionMarker
+            key={pending.id}
+            pending={pending}
+            fx={fx}
+            onFire={firePending}
+            onCancel={() => setPending(null)}
+            onMove={(lat, lon) => setPending((p) => (p ? movePending(p, lat, lon) : p))}
+          />
+        )}
 
         {/* ── Étiquettes des modèles 3D (glissables) ── */}
         {worldDevices.map((device) => {
@@ -789,6 +921,16 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
           </Marker>
         )}
       </ReactMap>
+
+      {/* Menu contextuel (clic droit) */}
+      {menu && (
+        <MapContextMenu
+          menu={menu}
+          onClose={() => setMenu(null)}
+          onIgnite={(lat, lon) => startPoint(lat, lon)}
+          sendCommand={sendCommand}
+        />
+      )}
 
       {/* Tooltip appareil au clic */}
       {selectedMarker && (

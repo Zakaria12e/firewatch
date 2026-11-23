@@ -22,6 +22,7 @@ import { SkySystem } from "./fx/sky"
 import { SpotSystem } from "./fx/spots"
 import { DeviceSystem } from "./fx/devices"
 import { PacketSystem } from "./fx/packets"
+import { IgnitionSystem, type IgnitionPreview } from "./fx/ignition"
 
 export const FX_LAYER_ID = "fw-three"
 
@@ -46,6 +47,8 @@ export class FireFxLayer implements CustomLayerInterface {
   private systems: FxSystem[] = []
   private devices: DeviceSystem | null = null
   private packets: PacketSystem | null = null
+  private ignition: IgnitionSystem | null = null
+  private ignitionPreview: IgnitionPreview | null = null
   private unsubPackets: (() => void) | null = null
 
   private world: WorldState | null = null
@@ -108,6 +111,8 @@ export class FireFxLayer implements CustomLayerInterface {
     const q = QUALITY_PRESETS[this.quality]
     this.devices = new DeviceSystem()
     this.packets = new PacketSystem(this.devices)
+    this.ignition = new IgnitionSystem()
+    this.ignition.setPreview(this.ignitionPreview)
     this.systems = [
       new WindSystem(q.wind),
       this.devices,
@@ -116,6 +121,7 @@ export class FireFxLayer implements CustomLayerInterface {
       new SpotSystem(),
       new SkySystem(q.water, q.rain),
       this.packets,
+      this.ignition,
     ]
     for (const s of this.systems) this.scene.add(s.object)
     this.pushWorld()
@@ -130,6 +136,7 @@ export class FireFxLayer implements CustomLayerInterface {
     this.systems = []
     this.devices = null
     this.packets = null
+    this.ignition = null
   }
 
   // ------------------------------------------------------------------ données
@@ -185,6 +192,15 @@ export class FireFxLayer implements CustomLayerInterface {
   /** Glisser-déposer : le modèle suit l'étiquette avant la confirmation du monde. */
   moveDevice(id: string, lon: number, lat: number) {
     this.devices?.setOverride(id, lon, lat)
+    this.map?.triggerRepaint()
+  }
+
+  /** Point de départ d'un feu en attente (balise 3D), null pour l'effacer. */
+  setIgnition(p: IgnitionPreview | null) {
+    const moved = !p || !this.ignitionPreview || p.points !== this.ignitionPreview.points
+    this.ignitionPreview = p
+    if (moved) this.ignition?.setPreview(p)
+    else this.ignition?.setProgress(p!.progress, p!.held)
     this.map?.triggerRepaint()
   }
 

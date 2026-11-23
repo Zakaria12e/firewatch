@@ -128,6 +128,63 @@ class FireModel:
         self._rebuild_cache()
         return True
 
+    def ignite_cells(self, cells):
+        """
+        Allume un ensemble de cellules sous un même foyer (zone d'allumage, ligne de feu).
+        La première cellule brûlable devient l'origine du foyer. Retourne l'id ou None.
+        """
+        burnable = []
+        seen = set()
+        for r, c in cells:
+            if (r, c) in seen or not (0 <= r < self._rows and 0 <= c < self._cols):
+                continue
+            seen.add((r, c))
+            if self.grid[r][c][0] in ('F', 'W'):
+                burnable.append((r, c))
+        if not burnable:
+            return None
+        fid = self._new_fire(*burnable[0])
+        for r, c in burnable[1:]:
+            self.grid[r][c] = ('B', BURN_TIME)
+            self.owner[r][c] = fid
+        self._rebuild_cache()
+        self._refresh_fires()
+        return fid
+
+    def disk_cells(self, r, c, radius_m):
+        """Cellules d'un disque de rayon radius_m centré sur (r, c), centre en premier."""
+        rad = radius_m / self._cell_m
+        n = int(math.ceil(rad))
+        out = [(r, c)]
+        for dr in range(-n, n + 1):
+            for dc in range(-n, n + 1):
+                if (dr or dc) and dr * dr + dc * dc <= rad * rad:
+                    out.append((r + dr, c + dc))
+        return out
+
+    def fire_near(self, r, c, max_cells):
+        """Foyer de la cellule en feu la plus proche de (r, c), à max_cells au plus."""
+        best = None
+        for br, bc in self._burning:
+            d = (br - r) ** 2 + (bc - c) ** 2
+            if d <= max_cells * max_cells and (best is None or d < best[0]):
+                best = (d, self.owner[br][bc])
+        return best[1] if best else None
+
+    def put_out(self, fire_id=None):
+        """
+        Fin de scénario : les cellules en feu du foyer (ou de tous) deviennent calcinées.
+        Retourne le nombre de cellules éteintes.
+        """
+        n = 0
+        for r, c in list(self._burning):
+            if fire_id is None or self.owner[r][c] == fire_id:
+                self.grid[r][c] = ('X', None)
+                n += 1
+        self._rebuild_cache()
+        self._refresh_fires()
+        return n
+
     def extinguish(self, r, c, radius_m):
         """Canadair : éteint et mouille les cellules dans un rayon (mètres)."""
         radius_cells = max(1, int(radius_m / self._cell_m))

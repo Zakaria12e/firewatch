@@ -107,12 +107,24 @@ class World:
         """Applique un ordre reçu du serveur dans la réponse à /api/sim/world."""
         t = cmd.get("type") or cmd.get("t")
         if t == "fire_start":
+            # Départ de feu : une cellule (petit) ou un disque de rayon donné (75 / 150 m).
+            # Un feu allumé ne se déplace pas : on agit ensuite par le vent, l'eau ou la pluie.
+            radius = max(0.0, min(400.0, float(cmd.get("radius", 0) or 0)))
             r, c = latlon_to_cell(cmd["lat"], cmd["lon"])
-            self.fire.ignite(r, c)
-        elif t == "fire_move":
-            # Déplacer le foyer = allumer une nouvelle cellule (l'ancien continue)
-            r, c = latlon_to_cell(cmd["lat"], cmd["lon"])
-            self.fire.ignite(r, c)
+            if self.fire.ignite_cells(self.fire.disk_cells(r, c, radius)) is None:
+                self._ignite_near(cmd["lat"], cmd["lon"])
+        elif t == "fire_line":
+            # Ligne de feu (foudre sur une crête, bord de route) : un seul foyer
+            self.fire.ignite_cells(self._line_cells(cmd.get("points") or []))
+        elif t == "fire_out":
+            # Fin de scénario : éteint le foyer le plus proche du point, ou tous les foyers
+            if "lat" in cmd and "lon" in cmd:
+                r, c = latlon_to_cell(cmd["lat"], cmd["lon"])
+                fid = self.fire.fire_near(r, c, max_cells=int(300 / CELL_M))
+                if fid is not None:
+                    self.fire.put_out(fid)
+            else:
+                self.fire.put_out()
         elif t == "wind":
             self.weather["wind_speed"] = float(cmd.get("speed", self.weather["wind_speed"]))
             self.weather["wind_dir"]   = float(cmd.get("dir",   self.weather["wind_dir"]))
@@ -153,6 +165,29 @@ class World:
             self._scheduled_commands.clear()
         elif t == "scenario":
             self._run_scenario(cmd.get("name", "chergui"))
+
+    @staticmethod
+    def _line_cells(points, max_cells=600):
+        """Cellules traversées par une polyligne [[lat, lon], …] (pas d'une demi-cellule)."""
+        cells = []
+        seen = set()
+        pts = [(float(p[0]), float(p[1])) for p in points[:200]
+               if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if len(pts) == 1:
+            pts.append(pts[0])
+        for (lat1, lon1), (lat2, lon2) in zip(pts, pts[1:]):
+            dn = (lat2 - lat1) * 111_320
+            de = (lon2 - lon1) * 111_320 * math.cos(math.radians((lat1 + lat2) / 2))
+            steps = max(1, int(math.hypot(dn, de) / (CELL_M / 2)))
+            for i in range(steps + 1):
+                t = i / steps
+                rc = latlon_to_cell(lat1 + (lat2 - lat1) * t, lon1 + (lon2 - lon1) * t)
+                if rc not in seen:
+                    seen.add(rc)
+                    cells.append(rc)
+                    if len(cells) >= max_cells:
+                        return cells
+        return cells
 
     def _schedule_drop(self, lat, lon, radius):
         """Canadair : l'eau touche le sol DROP_DELAY_S secondes après l'ordre."""
