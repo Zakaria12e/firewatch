@@ -1,8 +1,8 @@
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  RadialBarChart, RadialBar, PolarAngleAxis,
 } from "recharts"
 import type { Metrics } from "@/types"
+import { SizeLadder } from "@/components/LoraPacketPanel"
 
 interface Props {
   metrics: Metrics | null
@@ -70,7 +70,8 @@ export function PerformancePage({ metrics }: Props) {
   const { detection, falseAlerts, network, data, health, scenarios } = metrics
   const detTimes  = detection.confirmTimes.map((t, i) => ({ name: `F${i + 1}`, s: t }))
   const suspTimes = detection.suspTimes.map((t, i) => ({ name: `F${i + 1}`, s: t }))
-  const cborData  = [{ name: "Économie", value: data.savingsPct, fill: "#FF5A1F" }]
+  const sfData = [7, 8, 9, 10, 11, 12].map((sf) => ({ sf: `SF${sf}`, n: network.sfHistogram?.[sf] ?? 0 }))
+  const rejectedTotal = Object.values(network.rejected ?? {}).reduce((a, b) => a + b, 0)
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -108,32 +109,49 @@ export function PerformancePage({ metrics }: Props) {
         </div>
 
         {/* CBOR + Réseau */}
-        <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
-          <SectionCard title="Économie CBOR vs JSON" delay={2}>
-            <div className="flex items-center gap-5">
-              <div style={{ width: 100, height: 100, flexShrink: 0 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <RadialBarChart cx="50%" cy="50%" innerRadius="68%" outerRadius="100%"
-                    startAngle={90} endAngle={-270} data={cborData}>
-                    <PolarAngleAxis type="number" domain={[0, 100]} tick={false} />
-                    <RadialBar dataKey="value" cornerRadius={5} />
-                  </RadialBarChart>
-                </ResponsiveContainer>
-              </div>
-              <div>
-                <div className="text-[28px] font-bold tabular leading-none" style={{ color: "#FF5A1F", letterSpacing: "-0.5px" }}>
-                  {data.savingsPct}%
+        <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-3">
+          <SectionCard title="Taille d'un paquet de mesures (moyenne)" delay={2}>
+            {data.measureFrames > 0 ? (
+              <>
+                <SizeLadder sizes={{ json: data.avgJson, senmlCbor: data.avgSenmlCbor, compact: data.avgCompact }} maxPayload={51} sf={12} />
+                <div className="mt-3 grid grid-cols-3 gap-2 text-[10px]">
+                  <div style={{ color: "rgba(235,235,245,0.4)" }}>Compact vs JSON<div className="text-[15px] font-semibold tabular" style={{ color: "#FF5A1F" }}>−{data.savingsPct} %</div></div>
+                  <div style={{ color: "rgba(235,235,245,0.4)" }}>Compact vs SenML/CBOR<div className="text-[15px] font-semibold tabular text-white/80">−{Math.round(data.compactVsSenmlPct)} %</div></div>
+                  <div style={{ color: "rgba(235,235,245,0.4)" }}>Trame complète<div className="text-[15px] font-semibold tabular text-white/80">{data.avgPhy} o</div></div>
                 </div>
-                <div className="text-[10px] mt-1.5 space-y-0.5">
-                  <div style={{ color: "rgba(235,235,245,0.4)" }}>CBOR moy. : <span className="text-white/60 tabular">{data.avgPacketCbor} o</span></div>
-                  <div style={{ color: "rgba(235,235,245,0.4)" }}>
-                    JSON/paquet : <span className="text-white/60 tabular">
-                      {network.packetsReceived > 0 ? Math.round(data.jsonEstBytes / network.packetsReceived) + " o" : "—"}
-                    </span>
-                  </div>
+              </>
+            ) : (
+              <div className="text-[11px]" style={{ color: "rgba(235,235,245,0.35)" }}>Aucune trame de mesures reçue.</div>
+            )}
+          </SectionCard>
+
+          <SectionCard title="Réseau LoRaWAN" delay={3}>
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              {[
+                { l: "Airtime moyen", v: `${network.avgAirtimeMs.toLocaleString("fr-FR")} ms` },
+                { l: "Duty cycle max", v: `${network.dutyCycle.maxPct.toLocaleString("fr-FR", { maximumFractionDigits: 3 })} %`, sub: network.dutyCycle.maxId ? `${network.dutyCycle.maxId} · limite 1 %` : "limite 1 %" },
+                { l: "Duty cycle moyen", v: `${network.dutyCycle.avgPct.toLocaleString("fr-FR", { maximumFractionDigits: 3 })} %` },
+                { l: "Inscriptions", v: String(network.inscriptions) },
+                { l: "Hors charge utile", v: String(network.oversize), warn: network.oversize > 0 },
+                { l: "Trames rejetées", v: String(rejectedTotal), sub: rejectedTotal ? Object.entries(network.rejected).map(([k, n]) => `${k} ${n}`).join(" · ") : undefined },
+              ].map((x) => (
+                <div key={x.l} className="px-2.5 py-1.5 rounded-lg min-w-0" style={{ background: x.warn ? "rgba(224,38,14,0.14)" : "rgba(255,255,255,0.04)" }}>
+                  <div className="text-[9px]" style={{ color: "rgba(235,235,245,0.35)" }}>{x.l}</div>
+                  <div className="text-[13px] font-semibold tabular text-white/85 truncate">{x.v}</div>
+                  {x.sub && <div className="text-[9px] truncate" style={{ color: "rgba(235,235,245,0.3)" }}>{x.sub}</div>}
                 </div>
-              </div>
+              ))}
             </div>
+            <div className="text-[9px] mb-1" style={{ color: "rgba(235,235,245,0.35)" }}>Trames par facteur d'étalement (ADR)</div>
+            <ResponsiveContainer width="100%" height={92}>
+              <BarChart data={sfData} margin={{ top: 4, right: 0, left: -24, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+                <XAxis dataKey="sf" tick={{ fontSize: 10, fill: "rgba(235,235,245,0.4)" }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 10, fill: "rgba(235,235,245,0.3)" }} axisLine={false} tickLine={false} allowDecimals={false} />
+                <Tooltip {...CHART_TOOLTIP_STYLE} cursor={{ fill: "rgba(255,255,255,0.04)" }} formatter={(v) => [`${v} trames`, "Reçues"]} />
+                <Bar dataKey="n" fill="#FF5A1F" radius={[4, 4, 0, 0]} maxBarSize={28} />
+              </BarChart>
+            </ResponsiveContainer>
           </SectionCard>
 
           <SectionCard title="Santé réseau" delay={3}>

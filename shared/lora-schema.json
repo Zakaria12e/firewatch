@@ -1,0 +1,46 @@
+{
+  "_doc": "Schéma des charges utiles LoRaWAN FireWatch, partagé par le simulateur (Python) et le serveur (Node). Toute modification de champs impose d'incrémenter version.",
+  "version": 1,
+  "fport": { "inscription": 1, "mesures": 2, "senml": 3 },
+  "overheadBytes": 13,
+  "maxPayload": { "7": 222, "8": 222, "9": 115, "10": 51, "11": 51, "12": 51 },
+  "dutyCycle": 0.01,
+  "kinds": {
+    "station": 1, "temp": 2, "smoke": 3, "co": 4, "flame": 5, "thermal": 6,
+    "wind": 7, "fuel": 8, "rain": 9, "siren": 10, "gateway": 11
+  },
+  "units": {
+    "1": 1, "Cel": 2, "%RH": 3, "ppm": 4, "/": 5, "m/s": 6, "deg": 7,
+    "%": 8, "mm/h": 9, "%EL": 10
+  },
+  "channels": {
+    "temp":        { "code": 1,  "u": "Cel",  "scale": 10 },
+    "hum":         { "code": 2,  "u": "%RH",  "scale": 1 },
+    "smoke":       { "code": 3,  "u": "ppm",  "scale": 1 },
+    "co":          { "code": 4,  "u": "ppm",  "scale": 10 },
+    "ir":          { "code": 5,  "u": "/",    "scale": 100 },
+    "flags":       { "code": 6,  "u": "1",    "scale": 1 },
+    "wind_speed":  { "code": 7,  "u": "m/s",  "scale": 10 },
+    "wind_dir":    { "code": 8,  "u": "deg",  "scale": 0.5 },
+    "gust":        { "code": 9,  "u": "m/s",  "scale": 10 },
+    "fmc":         { "code": 10, "u": "%",    "scale": 10 },
+    "rain":        { "code": 11, "u": "mm/h", "scale": 10 },
+    "bat":         { "code": 12, "u": "%EL",  "scale": 1 },
+    "tmax":        { "code": 13, "u": "Cel",  "scale": 10 },
+    "hot_bearing": { "code": 14, "u": "deg",  "scale": 0.5 },
+    "hot_px":      { "code": 15, "u": "1",    "scale": 1 },
+    "azimuth":     { "code": 16, "u": "deg",  "scale": 0.5 }
+  },
+  "layouts": {
+    "station": { "fields": ["temp", "hum", "smoke", "co", "ir", "flags", "wind_speed", "wind_dir", "gust", "fmc", "rain", "bat"], "bits": ["flame"] },
+    "temp":    { "fields": ["temp", "hum", "bat"] },
+    "smoke":   { "fields": ["smoke", "hum", "bat"] },
+    "co":      { "fields": ["co", "bat"] },
+    "flame":   { "fields": ["ir", "flags", "bat"], "bits": ["flame"] },
+    "thermal": { "fields": ["tmax", "hot_bearing", "hot_px", "azimuth", "bat"] },
+    "wind":    { "fields": ["wind_speed", "wind_dir", "gust", "bat"] },
+    "fuel":    { "fields": ["fmc", "bat"] },
+    "rain":    { "fields": ["rain", "bat"] },
+    "siren":   { "fields": ["flags", "bat"], "bits": ["on"] }
+  }
+}

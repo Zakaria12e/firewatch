@@ -38,7 +38,10 @@ import cbor2
 from coap_client import CoapClient
 from engine.world import World
 from engine.forest import COLS, ROWS, CELL_M, latlon_to_cell, cell_to_latlon
-from engine.radio import uplink
+from engine.radio import uplink, airtime_ms
+from engine.lorawan import (FPORT_INSCRIPTION, FPORT_MESURES, FPORT_SENML, build_phy,
+                            devaddr_for, inscription_payload, layout, max_payload,
+                            measures_payload, min_interval_s)
 from devices.base import N, VS
 from devices.sensors import create_device
 
@@ -46,8 +49,8 @@ CENTER = (35.135, -5.215)
 GRID_COLS, GRID_ROWS = 4, 3
 SPACING_M = 900
 
-# Labels SenML entiers (RFC 8428)
-SENML_BN, SENML_BT = -2, -3
+# Labels SenML entiers (RFC 8428) → labels texte du format JSON
+SENML_LABELS = {-2: "bn", -3: "bt", 0: "n", 1: "u", 2: "v", 3: "vs", 4: "vb"}
 
 
 def _latlon(north_m, east_m):
@@ -171,16 +174,25 @@ def post_world(host, http_port, world, timeout=2.0):
 
 
 def handle_coap_response(device, resp):
-    """Applique la réponse CoAP à l'appareil (period, siren)."""
+    """
+    Applique la réponse CoAP (fenêtre de réception LoRaWAN) à l'appareil.
+    Downlink CBOR compact à clés entières : 1 = période (s), 2 = sirène, 4 = réinscription.
+    """
     if resp is None or not resp.get("payload"):
         return
     try:
         cmd = cbor2.loads(resp["payload"])
     except Exception:
         return
-    if device.kind != "gateway":
-        device.period = float(cmd.get("period", device.period))
-    siren = bool(cmd.get("siren", False))
+    if not isinstance(cmd, dict):
+        return
+    if cmd.get(4):
+        # Le serveur ne connaît pas (plus) cet appareil : il redemande l'inscription
+        device.needs_inscription = True
+    period = cmd.get(1)
+    if period is not None and device.kind != "gateway":
+        device.period = float(period)
+    siren = bool(cmd.get(2, False))
     if siren != device.siren:
         device.siren = siren
         if device.kind in ("station", "siren"):
@@ -188,42 +200,93 @@ def handle_coap_response(device, resp):
             print("🚨 {} : SIRÈNE {}".format(device.id, flag))
 
 
-def transmit(dev, world, coap, rng):
+def time_factor(world):
+    """Secondes simulées par seconde réelle (le duty cycle se compte en temps simulé)."""
+    return max(1e-6, float(world.speed) * float(world.time_scale))
+
+
+def senml_json(pack):
+    """SenML JSON (RFC 8428, labels texte) : référence pour comparer les tailles."""
+    out = []
+    for rec in pack:
+        out.append({SENML_LABELS[k]: v for k, v in rec.items() if k in SENML_LABELS})
+    return json.dumps(out, separators=(",", ":"))
+
+
+def frm_payload(dev, readings, senml_full):
+    """Charge utile applicative (FRMPayload) et son FPort."""
+    if dev.needs_inscription:
+        return FPORT_INSCRIPTION, cbor2.dumps(
+            inscription_payload(dev.id, dev.kind, dev.lat, dev.lon))
+    if senml_full or layout(dev.kind) is None:
+        return FPORT_SENML, cbor2.dumps(dev.build_senml(readings))
+    return FPORT_MESURES, cbor2.dumps(
+        measures_payload(dev.kind, readings, dev.battery, dev.azimuth))
+
+
+def transmit(dev, world, coap, rng, senml_full=False):
     """
     Un appareil prêt mesure le monde et émet.
     Retourne (statut, readings, taille) avec statut ∈ {"sent", "lost", "noack"}.
+
+    Appareil LoRa : trame LoRaWAN (FPort 1 inscription, 2 mesures compactes, 3 SenML
+    complet) ; la passerelle qui la reçoit la relaie au serveur dans une enveloppe CoAP
+    avec ses propres mesures radio (RSSI, SNR, SF), hors de la charge utile.
+    Passerelle : statistiques en SenML complet par son backhaul filaire (pas de LoRa).
     """
     now = time.time()
     dev.schedule_next(now)
     readings = dev.read_sensors(world)
 
     if dev.kind == "gateway":
-        # Statistiques de la passerelle : backhaul filaire, pas de liaison LoRa
-        gw_id = dev.id
-        pack = dev.build_senml(readings, radio=None)
-    else:
-        link = uplink(dev.lat, dev.lon, world.active_gateways(), world.elevation_at, rng)
-        dev.consume_battery(link["sf"] or 12)
-        if not link["delivered"]:
-            world.radio_stats["lost"] += 1
-            dev._seq += 1   # la trame est partie mais n'a été reçue par personne
-            return "lost", readings, 0
-        for gid in link["receivers"]:
-            gw = world.devices.get(gid)
-            if gw is not None and hasattr(gw, "record_rx"):
-                gw.record_rx(link["rssi_by"].get(gid))
-        gw_id = link["gw"]
-        pack = dev.build_senml(readings, radio=(link["rssi"], link["snr"], link["sf"]))
+        dev._seq += 1
+        pack = dev.build_senml(readings, seq=dev._seq)
+        pack.append({N: "gw", VS: dev.id})
+        payload = cbor2.dumps(pack)
+        resp = coap.post("fw/up", payload)
+        if resp is None:
+            return "noack", readings, len(payload)
+        handle_coap_response(dev, resp)
+        return "sent", readings, len(payload)
 
-    # Métadonnée ajoutée par la passerelle qui relaie le paquet
-    pack.append({N: "gw", VS: gw_id})
-    payload = cbor2.dumps(pack)
-    resp = coap.post("fw/up", payload)
+    fport, frm = frm_payload(dev, readings, senml_full)
+    link = uplink(dev.lat, dev.lon, world.active_gateways(), world.elevation_at, rng)
+    sf = link["sf"] or 12
+    fcnt = dev._seq
+    dev._seq += 1
+    phy = build_phy(devaddr_for(dev.id), fcnt, fport, frm)
+    air = airtime_ms(len(phy), sf)
+    oversize = len(frm) > max_payload(sf)
+    dev.consume_battery(air)
+    # Duty cycle 1 % (EU868) : silence de 99 × l'airtime avant la prochaine émission
+    dev._dc_until = now + min_interval_s(air) / time_factor(world)
+    dev.last_tx = {"fport": fport, "bytes": len(frm), "phy": len(phy),
+                   "airtime_ms": round(air, 1), "sf": sf, "oversize": oversize}
+    world.radio_stats["airtime_ms"] += air
+    if oversize:
+        world.radio_stats["oversize"] += 1
+
+    if not link["delivered"]:
+        world.radio_stats["lost"] += 1   # la trame est partie mais aucune passerelle ne l'a reçue
+        return "lost", readings, len(frm)
+    for gid in link["receivers"]:
+        gw = world.devices.get(gid)
+        if gw is not None and hasattr(gw, "record_rx"):
+            gw.record_rx(link["rssi_by"].get(gid))
+
+    envelope = {
+        "gw": link["gw"], "rssi": link["rssi"], "snr": link["snr"], "sf": sf,
+        "freq": rng.choice((868.1, 868.3, 868.5)), "phy": phy,
+    }
+    resp = coap.post("fw/up", cbor2.dumps(envelope))
     world.radio_stats["sent"] += 1
     if resp is None:
-        return "noack", readings, len(payload)
+        return "noack", readings, len(frm)
+    if fport == FPORT_INSCRIPTION and resp.get("code") == "2.04":
+        dev.needs_inscription = False
+        dev._next_send = now + 0.5   # les mesures suivent l'inscription (duty cycle respecté)
     handle_coap_response(dev, resp)
-    return "sent", readings, len(payload)
+    return "sent", readings, len(frm)
 
 
 BENCH_SCENARIOS = [
@@ -279,7 +342,7 @@ def run_bench(args):
 
                 for dev in list(world.devices.values()):
                     if dev.ready(now):
-                        transmit(dev, world, coap_client, rng)
+                        transmit(dev, world, coap_client, rng, args.senml_full)
 
                 if now - last_world_post >= 0.5:
                     for cmd in post_world(args.host, args.http_port, world):
@@ -361,6 +424,8 @@ def main():
     p.add_argument("--fire-after",   type=float, default=0,     help="feu auto après N s (0=jamais)")
     p.add_argument("--real-weather", action="store_true")
     p.add_argument("--verbose",      action="store_true")
+    p.add_argument("--senml-full",   action="store_true",
+                   help="envoyer le SenML complet (FPort 3) au lieu du format compact, pour comparer")
     p.add_argument("--bench",        type=int,   default=0,
                    help="banc d'essai : N runs par scénario (serveur doit être en marche)")
     args = p.parse_args()
@@ -377,12 +442,14 @@ def main():
     rng = random.Random()
     stations = [d for d in world.devices.values() if d.kind == "station"]
 
-    # Démonstration CBOR vs JSON
-    sample_readings = stations[0].read_sensors(world)
-    sample_pack = stations[0].build_senml(sample_readings, radio=(-80.0, 5.0, 7))
-    stations[0]._seq -= 1
-    cbor_size = len(cbor2.dumps(sample_pack))
-    json_size  = len(json.dumps(sample_pack, separators=(",", ":")).encode())
+    # Démonstration : SenML JSON → SenML/CBOR → CBOR compact (station type)
+    st = stations[0]
+    sample = st.read_sensors(world)
+    full_pack = st.build_senml(sample)
+    size_json = len(senml_json(full_pack).encode())
+    size_senml = len(cbor2.dumps(full_pack))
+    size_compact = len(cbor2.dumps(measures_payload("station", sample, st.battery)))
+    size_insc = len(cbor2.dumps(inscription_payload(st.id, "station", st.lat, st.lon)))
 
     kinds = {}
     for d in world.devices.values():
@@ -395,8 +462,17 @@ def main():
         **world.weather))
     print("   Grille : {}×{} cellules de {} m = {:.1f}×{:.1f} km".format(
         COLS, ROWS, CELL_M, COLS * CELL_M / 1000, ROWS * CELL_M / 1000))
-    print("   SenML CBOR={} o / JSON={} o (−{}%)".format(
-        cbor_size, json_size, 100 - cbor_size * 100 // json_size))
+    print("   Station : SenML JSON {} o → SenML/CBOR {} o → CBOR compact {} o (−{} %)".format(
+        size_json, size_senml, size_compact, 100 - size_compact * 100 // size_json))
+    print("             inscription {} o ; charge utile max : 222 o (SF7-8), 115 o (SF9), "
+          "51 o (SF10-12)".format(size_insc))
+    for sf in (7, 9, 12):
+        air = airtime_ms(size_compact + 13, sf)
+        print("             SF{} : airtime {:.0f} ms, au plus 1 trame / {:.0f} s simulées "
+              "(duty cycle 1 %)".format(sf, air, min_interval_s(air)))
+    if args.senml_full:
+        print("   ⚠️  Mode --senml-full : SenML complet sur FPort 3 ({} o, hors charge utile "
+              "LoRaWAN au-delà de SF7-8)".format(size_senml))
     print()
 
     last_world_post = 0.0
@@ -426,7 +502,7 @@ def main():
             for dev in list(world.devices.values()):
                 if not dev.ready(now):
                     continue
-                status, readings, size = transmit(dev, world, coap, rng)
+                status, readings, size = transmit(dev, world, coap, rng, args.senml_full)
 
                 if status == "noack":
                     if not offline_warned:

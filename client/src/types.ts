@@ -71,15 +71,71 @@ export interface SenmlRecord {
   vb?: boolean
 }
 
+/** En-tête de la trame LoRaWAN (PHYPayload) telle que découpée par le serveur réseau. */
+export interface LoraFrame {
+  mhdr: number
+  confirmed: boolean
+  devAddr: string
+  fctrl: number
+  fcnt: number
+  fport: number
+  headerBytes: number
+  mic: string
+}
+
+/** Position du tableau compact : valeur brute × échelle → valeur physique. */
+export interface DecodedField {
+  pos: number
+  n: string
+  raw: number | null
+  scale: number
+  v: number | string | null
+  u: string
+}
+
+/** Tailles du même contenu : SenML JSON → SenML/CBOR → CBOR compact → trame LoRaWAN. */
+export interface PacketSizes {
+  json?: number
+  senmlCbor?: number
+  compact?: number
+  phy?: number
+}
+
 export interface LastPacket {
+  /** inscription (FPort 1), mesures compactes (2), SenML complet (3) ou backhaul de passerelle */
+  type: "inscription" | "mesures" | "senml" | "backhaul"
   hex: string
-  senml: SenmlRecord[]
-  cborBytes: number
-  jsonBytes: number
+  senml?: SenmlRecord[]
+  frame?: LoraFrame
+  radio?: { gw: string; rssi: number; snr: number; sf: number; freq?: number }
+  fields?: DecodedField[]
+  sizes: PacketSizes
+  airtimeMs?: number
+  maxPayload?: number
+  oversize?: boolean
+  /** part de l'heure glissante (temps simulé) passée à émettre, % */
+  dutyPct?: number
+  /** période minimale imposée par le duty cycle (s réelles) */
+  minPeriodS?: number
+  /** secondes simulées par seconde réelle */
+  timeFactor?: number
+  downlink?: { period: number; siren: boolean; hex: string; bytes: number }
+}
+
+export interface InscriptionInfo extends Omit<LastPacket, "fields"> {
+  version: number
+  kind: DeviceKind
+  lat: number
+  lon: number
+  fields: { name: string; u: string; scale: number }[]
+  bits: string[]
+  at: number
 }
 
 export interface FireNode {
   id: string
+  /** type annoncé dans l'inscription LoRaWAN */
+  kind?: DeviceKind
   lat: number
   lon: number
   ts: number
@@ -97,6 +153,7 @@ export interface FireNode {
   seq?: number
   sf?: number
   lastPacket?: LastPacket
+  inscription?: InscriptionInfo
 }
 
 export interface Zone {
@@ -276,8 +333,32 @@ export interface Metrics {
     count: number
   }
   falseAlerts: { avoided: number }
-  network: { packetsReceived: number; pdr: number }
-  data: { cborBytes: number; jsonEstBytes: number; savingsPct: number; avgPacketCbor: number }
+  network: {
+    packetsReceived: number
+    pdr: number
+    frames: number
+    inscriptions: number
+    backhaul: number
+    airtimeMsTotal: number
+    avgAirtimeMs: number
+    sfHistogram: Record<string, number>
+    oversize: number
+    rejected: Record<string, number>
+    dutyCycle: { limitPct: number; avgPct: number; maxPct: number; maxId: string | null }
+  }
+  data: {
+    savingsPct: number
+    cborSavingsPct: number
+    compactVsSenmlPct: number
+    measureFrames: number
+    avgJson: number
+    avgSenmlCbor: number
+    avgCompact: number
+    avgPhy: number
+    cborBytes: number
+    jsonEstBytes: number
+    avgPacketCbor: number
+  }
   health: { online: number; total: number }
   scenarios: ScenarioBenchResult[]
 }

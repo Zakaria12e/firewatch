@@ -6,7 +6,7 @@ import express from "express"
 import cors from "cors"
 import { Server } from "socket.io"
 import coap from "coap"
-import { decode, encode } from "cbor-x"
+import { decode } from "cbor-x"
 
 import { config, CENTER, PLACES } from "./config.js"
 import { nodeStatus, riskIndex } from "./detect.js"
@@ -15,8 +15,11 @@ import { distance, inPolygon } from "./geo.js"
 import { initStore, saveMeasurement, history, saveIncident, listIncidents, storeMode } from "./store.js"
 import { notify, buildMessage } from "./alerts.js"
 import { getWeather, getWeatherMode, setWeatherMode, setManualWeather, applyPreset } from "./weather.js"
+import { createNetworkServer } from "./lora/network.js"
+import { parseSenml, labelSenml, senmlSizes } from "./lora/codec.js"
+import { encodeDownlink } from "./lora/downlink.js"
 import {
-  recordPacket, recordFireStart, recordSuspicion, recordConfirmation,
+  recordPacket, recordRejected, recordFireStart, recordSuspicion, recordConfirmation,
   recordFireReset, recordFalseAlertAvoided, getMetrics, resetMetrics,
 } from "./metrics.js"
 import { getSettings, getDefaults, updateSettings, resetSettings } from "./settings.js"
@@ -232,7 +235,8 @@ async function runDetection() {
     burnZones: (settings.burnZones || []).map((z) => z.polygon).filter((p) => Array.isArray(p) && p.length >= 3),
     settings: { thresholds: settings.thresholds, fusion: settings.fusion },
   }
-  const result = evaluate([...nodes.values()], now, detContext)
+  const measured = [...nodes.values()].filter((n) => n.readings && Object.keys(n.readings).length)
+  const result = evaluate(measured, now, detContext)
   if (result.suspects.length) lastSuspectAt = now
 
   // Santé des appareils (§6.2) : exposée au dashboard (badge, inventaire)
@@ -292,33 +296,69 @@ async function runDetection() {
 }
 
 // ---------------------------------------------------------------------------
-// Serveur CoAP : réception des mesures SenML/CBOR
+// Serveur CoAP : réception des trames LoRaWAN relayées par les passerelles
 // ---------------------------------------------------------------------------
-function parseSenml(pack) {
-  let bn = "", bt = 0
-  const values = {}
-  for (const rec of pack) {
-    if (rec[-2] !== undefined) bn = rec[-2]       // nom de base
-    if (rec[-3] !== undefined) bt = rec[-3]       // temps de base
-    const name = rec[0]
-    values[name] = rec[2] ?? rec[4] ?? rec[3]     // v, vb ou vs
-  }
-  const id = bn.split(":").filter(Boolean).pop()
-  return { id, ts: bt ? bt * 1000 : Date.now(), values }
-}
+const lora = createNetworkServer()
 
-/** SenML à labels entiers → labels lisibles (RFC 8428 §6), pour le dashboard. */
-const SENML_LABELS = [[-2, "bn"], [-3, "bt"], [0, "n"], [1, "u"], [2, "v"], [3, "vs"], [4, "vb"]]
-function labelSenml(pack) {
-  return pack.map((rec) => {
-    const out = {}
-    for (const [k, label] of SENML_LABELS) if (rec[k] !== undefined) out[label] = rec[k]
-    return out
-  })
-}
+// Secondes simulées par seconde réelle : le duty cycle se compte en temps simulé
+const timeFactor = () =>
+  Math.max(1e-6, (worldState?.timeScale ?? config.timeScale) * (worldState?.speed ?? 1))
 
 // Métadonnées radio/relais : hors des mesures physiques
 const META_KEYS = new Set(["lat", "lon", "gw", "seq", "sf"])
+
+/** Période d'envoi ordonnée : rapide en danger, jamais sous le minimum du duty cycle. */
+function orderedPeriod(danger, minPeriodS = 0) {
+  const wanted = danger ? config.periodAlert : config.periodNormal
+  return Math.ceil(Math.max(wanted, minPeriodS) * 10) / 10
+}
+
+function replyCbor(res, code, body) {
+  res.code = code
+  res.setOption("Content-Format", "application/cbor")
+  res.end(body)
+  return body
+}
+
+/**
+ * Intègre un paquet SenML (reconstruit ou reçu tel quel) : nœud, mesure, détection.
+ * `extra` porte ce que le réseau sait de l'appareil (type, tailles, trame, duty cycle).
+ */
+function ingestSenml(pack, extra) {
+  const msg = parseSenml(pack)
+  const v = msg.values
+  // Toutes les mesures du paquet, sans les métadonnées de position et de relais
+  const readings = {}
+  for (const [k, val] of Object.entries(v)) {
+    if (!META_KEYS.has(k) && val !== undefined) readings[k] = val
+  }
+  if ("flame" in readings) readings.flame = !!readings.flame
+  const status = nodeStatus(readings)
+  const danger = status !== "ok" || incident?.status === "actif"
+  const prev = nodes.get(msg.id)
+  const node = {
+    ...(prev?.inscription ? { inscription: prev.inscription } : {}),
+    id: msg.id,
+    kind: extra.kind ?? prev?.kind,
+    lat: v.lat,
+    lon: v.lon,
+    ts: Date.now(),
+    readings,
+    status,
+    risk: riskIndex(readings),
+    // Passerelles : statistiques toutes les 30 s par leur backhaul (période fixe)
+    period: extra.kind === "gateway" ? 30 : orderedPeriod(danger, extra.minPeriodS),
+    bytes: extra.bytes,
+    gw: typeof v.gw === "string" ? v.gw : null,   // passerelle qui a relayé le paquet
+    seq: v.seq,
+    sf: v.sf,
+    lastPacket: extra.lastPacket,
+  }
+  nodes.set(node.id, node)
+  saveMeasurement({ node: node.id, ts: new Date(msg.ts), lat: node.lat, lon: node.lon, status, ...readings })
+  runDetection()
+  return node
+}
 
 const coapServer = coap.createServer({ type: "udp4" })
 
@@ -327,62 +367,102 @@ coapServer.on("request", (req, res) => {
     res.code = "4.04"
     return res.end()
   }
-  let msg, rawPack
+  let body
   try {
-    rawPack = decode(req.payload)
-    msg = parseSenml(rawPack)
-    if (!msg.id) throw new Error("bn manquant")
-  } catch (e) {
+    body = decode(req.payload)
+  } catch {
+    recordRejected("cbor")
     res.code = "4.00"
-    return res.end(`SenML/CBOR invalide : ${e.message}`)
+    return res.end("CBOR invalide")
   }
-  const jsonBytes = Buffer.byteLength(JSON.stringify(rawPack))
-  recordPacket(req.payload.length, jsonBytes, { id: msg.id, seq: msg.values.seq })
 
-  // Toutes les mesures du paquet (station complète ou capteur simple : DHT22, MQ-2,
-  // caméra thermique…), sans les métadonnées de position et de relais
-  const v = msg.values
-  const readings = {}
-  for (const [k, val] of Object.entries(v)) {
-    if (!META_KEYS.has(k) && val !== undefined) readings[k] = val
+  // Statistiques d'une passerelle : SenML complet par son backhaul filaire
+  if (Array.isArray(body)) {
+    let node
+    try {
+      const sizes = senmlSizes(body)
+      node = ingestSenml(body, {
+        kind: "gateway",
+        bytes: req.payload.length,
+        lastPacket: {
+          type: "backhaul",
+          hex: Buffer.from(req.payload).toString("hex"),
+          senml: labelSenml(body),
+          sizes: { senmlCbor: sizes.senmlCbor, json: sizes.json },
+        },
+      })
+    } catch (e) {
+      recordRejected(e.code || "format")
+      res.code = "4.00"
+      return res.end(`SenML invalide : ${e.message}`)
+    }
+    recordPacket({ id: node.id, seq: node.seq, type: "backhaul" })
+    replyCbor(res, "2.04", encodeDownlink({ period: 30 }))
+    io.emit("node", publicNode(node))
+    return
   }
-  if ("flame" in readings) readings.flame = !!readings.flame
-  const status = nodeStatus(readings)
-  const danger = status !== "ok" || incident?.status === "actif"
-  const node = {
-    id: msg.id,
-    lat: v.lat,
-    lon: v.lon,
-    ts: Date.now(),
-    readings,
-    status,
-    risk: riskIndex(readings),
-    // Passerelles : statistiques toutes les 30 s par leur backhaul (période fixe)
-    period: v.rx !== undefined ? 30 : danger ? config.periodAlert : config.periodNormal,
-    bytes: req.payload.length,
-    gw: typeof v.gw === "string" ? v.gw : null,   // passerelle qui a relayé le paquet
-    seq: v.seq,
-    sf: v.sf,
-    // Dernier paquet tel que reçu : hexadécimal CBOR + SenML décodé (inspection)
-    lastPacket: {
-      hex: Buffer.from(req.payload).toString("hex"),
-      senml: labelSenml(rawPack),
-      cborBytes: req.payload.length,
-      jsonBytes,
-    },
+
+  // Trame LoRaWAN relayée : décodage par le serveur réseau
+  let up
+  try {
+    up = lora.handleUplink(body, { now: Date.now(), timeFactor: timeFactor() })
+  } catch (e) {
+    recordRejected(e.code || "format")
+    if (e.rejoin) return replyCbor(res, "4.01", encodeDownlink({ rejoin: true }))   // non inscrit
+    res.code = "4.00"
+    return res.end(`Trame LoRaWAN invalide : ${e.message}`)
   }
-  nodes.set(node.id, node)
-  saveMeasurement({ node: node.id, ts: new Date(msg.ts), lat: node.lat, lon: node.lon, status, ...readings })
+  recordPacket({
+    id: up.id, seq: up.frame.fcnt, type: up.type, sizes: up.sizes,
+    airtimeMs: up.airtimeMs, sf: up.radio.sf, oversize: up.oversize,
+  })
 
-  runDetection()
+  const frameInfo = {
+    type: up.type,
+    hex: up.phyHex,
+    frame: up.frame,
+    radio: up.radio,
+    sizes: up.sizes,
+    airtimeMs: up.airtimeMs,
+    maxPayload: up.maxPayload,
+    oversize: up.oversize,
+    dutyPct: up.dutyPct,
+    minPeriodS: Math.round(up.minPeriodS * 100) / 100,
+    timeFactor: timeFactor(),
+  }
 
-  // Réponse CoAP = ordres pour le nœud (comme une fenêtre de réception LoRaWAN)
-  // Contient uniquement period et siren : les ordres du monde passent par /api/sim/world
-  const reply = { period: node.period, siren: sirenFor(node) }
-  res.code = "2.04"
-  res.setOption("Content-Format", "application/cbor")
-  res.end(encode(reply))
+  if (up.type === "inscription") {
+    const reg = up.reg
+    const prev = nodes.get(reg.id)
+    const inscription = {
+      ...frameInfo,
+      version: reg.version, kind: reg.kind, lat: reg.lat, lon: reg.lon,
+      fields: reg.fields, bits: reg.bits, at: reg.registeredAt,
+    }
+    // Position et type viennent de l'inscription ; les mesures suivront sur FPort 2
+    const node = prev
+      ? { ...prev, kind: reg.kind, lat: reg.lat, lon: reg.lon, ts: Date.now(), inscription }
+      : {
+          id: reg.id, kind: reg.kind, lat: reg.lat, lon: reg.lon, ts: Date.now(), readings: {},
+          status: "ok", risk: riskIndex({}), period: orderedPeriod(false, up.minPeriodS),
+          bytes: up.sizes.compact, gw: up.radio.gw, seq: up.frame.fcnt, sf: up.radio.sf, inscription,
+        }
+    nodes.set(reg.id, node)
+    console.log(`📝 Inscription ${reg.id} (${reg.kind}, DevAddr ${up.frame.devAddr}, ${up.sizes.compact} o)`)
+    replyCbor(res, "2.04", encodeDownlink({ period: node.period, siren: sirenFor(node) }))
+    io.emit("node", publicNode(node))
+    return
+  }
 
+  const node = ingestSenml(up.pack, {
+    kind: up.reg?.kind,
+    bytes: up.sizes.compact,
+    minPeriodS: up.minPeriodS,
+    lastPacket: { ...frameInfo, fields: up.fields, senml: up.senml },
+  })
+  const dl = { period: node.period, siren: sirenFor(node) }
+  const dlBytes = replyCbor(res, "2.04", encodeDownlink(dl))
+  node.lastPacket.downlink = { ...dl, hex: Buffer.from(dlBytes).toString("hex"), bytes: dlBytes.length }
   io.emit("node", publicNode(node))
 })
 

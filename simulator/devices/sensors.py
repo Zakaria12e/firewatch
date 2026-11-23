@@ -111,7 +111,7 @@ class Gateway(Device):
         if rssi is not None:
             self._rssi_sum += rssi
 
-    def consume_battery(self, sf):
+    def consume_battery(self, airtime_ms):
         if self.fault == "battery":
             self.battery = max(0.0, self.battery - 2.0)
 

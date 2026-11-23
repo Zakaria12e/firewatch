@@ -6,6 +6,7 @@ import { C, alpha, healthColor, healthLabel, kindMeta, KIND_META, rssiColor } fr
 import { getReadings } from "@/lib/deviceReadings"
 import { SegmentedControl } from "@/components/SegmentedControl"
 import { Stepper } from "@/components/controls"
+import { LoraPacketPanel } from "@/components/LoraPacketPanel"
 
 // ---------------------------------------------------------------------------
 // Modèle de ligne : appareil du monde (type, panne) + dernier paquet reçu
@@ -65,7 +66,7 @@ function buildRows(devices: WorldDevice[], nodes: FireNode[]): DeviceRow[] {
     rows.push(make(d.id, d.kind, d.lat, d.lon, d.azimuth ?? 0, d.fault, byId.get(d.id)))
   }
   for (const n of nodes) {
-    if (!seen.has(n.id)) rows.push(make(n.id, inferKind(n.readings ?? {}), n.lat, n.lon, 0, null, n))
+    if (!seen.has(n.id)) rows.push(make(n.id, n.kind ?? inferKind(n.readings ?? {}), n.lat, n.lon, 0, null, n))
   }
   return rows
 }
@@ -86,7 +87,7 @@ const COLUMNS: { key: SortKey; label: string; width: number; align: "left" | "ri
   { key: "temp",  label: "Temp (°C)",       width: 88,  align: "right" },
   { key: "smoke", label: "Fumée (ppm)",     width: 100, align: "right" },
   { key: "ts",    label: "Dernière mesure", width: 128, align: "right" },
-  { key: "bytes", label: "Paquet (o CBOR)", width: 120, align: "right" },
+  { key: "bytes", label: "Charge utile (o)", width: 120, align: "right" },
 ]
 
 const STATE_GROUPS: { value: StateFilter; label: string; dot?: string }[] = [
@@ -204,13 +205,6 @@ function MiniChart({ data, dataKey, color, unit, label }: { data: HistPoint[]; d
   )
 }
 
-function hexLines(hex: string) {
-  const bytes = hex.match(/.{1,2}/g) ?? []
-  const lines: string[] = []
-  for (let i = 0; i < bytes.length; i += 16) lines.push(bytes.slice(i, i + 16).join(" "))
-  return lines
-}
-
 const SECTION = "text-[10px] uppercase font-semibold"
 const SECTION_STYLE = { color: C.text4, letterSpacing: "0.09em" }
 
@@ -223,7 +217,6 @@ function DeviceDrawer({ row, onClose, onLocate, sendCommand }: {
   const meta = kindMeta(row.kind)
   const node = row.node
   const readings = node ? getReadings(row.kind, node.readings ?? {}) : []
-  const pkt = node?.lastPacket
   const [hist, setHist] = useState<HistPoint[]>([])
   const now = useNow(1000)
 
@@ -244,8 +237,6 @@ function DeviceDrawer({ row, onClose, onLocate, sendCommand }: {
     const id = window.setInterval(load, 5000)
     return () => { alive = false; window.clearInterval(id) }
   }, [row.id])
-
-  const savings = pkt && pkt.jsonBytes > 0 ? Math.round((1 - pkt.cborBytes / pkt.jsonBytes) * 100) : null
 
   return (
     <aside
@@ -337,47 +328,8 @@ function DeviceDrawer({ row, onClose, onLocate, sendCommand }: {
           </section>
         )}
 
-        {/* Paquet SenML / CBOR */}
-        {pkt && (
-          <section>
-            <div className="flex items-baseline justify-between mb-2 gap-2">
-              <h3 className={SECTION} style={SECTION_STYLE}>Dernier paquet SenML</h3>
-              <span className="text-[11px] tabular whitespace-nowrap" style={{ color: C.text2 }}>
-                <b style={{ color: C.text }}>{pkt.cborBytes} o</b> CBOR · {pkt.jsonBytes} o JSON
-                {savings !== null && <span style={{ color: C.fire }}> · −{savings} %</span>}
-              </span>
-            </div>
-            <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
-              <table className="w-full text-[11px]">
-                <thead>
-                  <tr style={{ background: C.fill }}>
-                    {["n", "u", "valeur"].map((h) => (
-                      <th key={h} className="text-left font-medium px-3 py-1.5" style={{ color: C.text4 }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {pkt.senml.map((r, i) => (
-                    <tr key={i} style={{ borderTop: `1px solid ${C.line}` }}>
-                      <td className="px-3 py-1 font-mono" style={{ color: C.text }}>{r.n}</td>
-                      <td className="px-3 py-1 font-mono" style={{ color: C.text3 }}>{r.u ?? ""}</td>
-                      <td className="px-3 py-1 font-mono tabular" style={{ color: C.text2 }}>
-                        {r.v ?? (r.vb !== undefined ? String(r.vb) : r.vs ?? "")}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="text-[10px] mt-1.5 font-mono truncate" style={{ color: C.text4 }}>bn = {pkt.senml[0]?.bn} · bt = {pkt.senml[0]?.bt}</div>
-            <div className={`mt-3 mb-1.5 ${SECTION}`} style={SECTION_STYLE}>Hexadécimal CBOR</div>
-            <pre className="text-[10px] leading-[1.55] font-mono p-3 rounded-xl overflow-x-auto" style={{ background: "rgba(0,0,0,0.5)", color: C.text2, border: `1px solid ${C.line}` }}>
-              {hexLines(pkt.hex).map((l, i) => (
-                <div key={i}><span style={{ color: C.text4 }}>{(i * 16).toString(16).padStart(4, "0")}  </span>{l}</div>
-              ))}
-            </pre>
-          </section>
-        )}
+        {/* Trame LoRaWAN : tailles, airtime, duty cycle, décodage, inscription */}
+        {node && <LoraPacketPanel node={node} />}
 
         {/* Orientation caméra */}
         {row.kind === "thermal" && row.fault !== null && (

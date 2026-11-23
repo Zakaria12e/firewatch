@@ -41,7 +41,7 @@ class World:
         self.time_scale = 15    # 1 min réelle = time_scale min simulées (pour affichage)
         self.sim_time = 0.0     # secondes simulées depuis le début
         self.drops = []         # largages Canadair [{id, lat, lon, radius, impact_at, done}]
-        self.radio_stats = {"sent": 0, "lost": 0}
+        self.radio_stats = {"sent": 0, "lost": 0, "airtime_ms": 0.0, "oversize": 0}
         self._command_queue = []
         self._last_tick = time.time()
         self._device_id_counter = 0
@@ -133,6 +133,7 @@ class World:
             if dev:
                 dev.lat = float(cmd["lat"])
                 dev.lon = float(cmd["lon"])
+                dev.needs_inscription = True   # la nouvelle position part dans l'inscription
         elif t == "device_rotate":
             dev = self.devices.get(cmd.get("id"))
             if dev:
@@ -322,7 +323,8 @@ class World:
             ],
             "weather": dict(self.weather),
             "devices": [d.to_dict() for d in self.devices.values()],
-            "radio": dict(self.radio_stats),
+            "radio": {k: (round(v, 1) if isinstance(v, float) else v)
+                      for k, v in self.radio_stats.items()},
             "timeScale": self.time_scale,
             "speed": self.speed,
             "simTime": round(self.sim_time, 1),

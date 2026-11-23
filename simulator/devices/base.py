@@ -36,7 +36,10 @@ class Device:
         self.siren = False
         self.fault = "ok"            # ok | offline | battery | stuck | drift | spike | noisy
         self._next_send = time.time() + random.uniform(0, period)
-        self._seq = 0
+        self._seq = 0                # FCnt LoRaWAN (compteur de trames montantes)
+        self.needs_inscription = True   # inscription (FPort 1) à envoyer avant les mesures
+        self._dc_until = 0.0         # fin du silence imposé par le duty cycle (temps réel)
+        self.last_tx = None          # dernière émission : {fport, bytes, phy, airtime_ms, sf…}
         self._stuck_readings = None  # valeurs figées (mode stuck)
         self._rng = random.Random()
 
@@ -55,10 +58,10 @@ class Device:
     # ------------------------------------------------------------------
     # Consommation batterie
     # ------------------------------------------------------------------
-    def consume_battery(self, sf):
-        # Airtime proportionnel à 2^SF : ~0,0004 % de batterie par message au SF7
-        # (≈ 0,013 % au SF12 : 2400 mAh, 40 mA pendant l'émission)
-        cost = 0.0004 * (2 ** (sf - 7))
+    def consume_battery(self, airtime_ms):
+        # Réveil + mesure (chauffe des MQ-x) puis émission : 2400 mAh, ~40 mA pendant
+        # l'airtime ; coût accentué pour rester lisible dans une démo de quelques minutes
+        cost = 0.0003 + 0.000004 * airtime_ms
         self.battery = max(0.0, self.battery - cost)
         if self.fault == "battery":
             self.battery = max(0.0, self.battery - 0.5)
@@ -67,7 +70,8 @@ class Device:
     # Prêt à émettre ?
     # ------------------------------------------------------------------
     def ready(self, now):
-        return now >= self._next_send and self.fault != "offline" and self.battery > 1.0
+        return (now >= self._next_send and now >= self._dc_until
+                and self.fault != "offline" and self.battery > 1.0)
 
     def schedule_next(self, now):
         self._next_send = now + self.period
@@ -104,25 +108,20 @@ class Device:
     # ------------------------------------------------------------------
     # Construction du paquet SenML
     # ------------------------------------------------------------------
-    def build_senml(self, readings, radio=None):
+    def build_senml(self, readings, seq=None):
         """
-        Paquet SenML à labels entiers.
-        radio = (rssi, snr, sf) pour un uplink LoRa, None pour une liaison filaire
-        (passerelle : backhaul Ethernet/4G).
+        Paquet SenML complet à labels entiers, tel que l'appareil le produirait sans
+        format compact (option --senml-full, ou statistiques d'une passerelle par son
+        backhaul). Les métadonnées radio (RSSI, SNR, SF) sont ajoutées par la passerelle.
         """
-        self._seq += 1
         pack = [
             {BN: "urn:dev:fw:{}:".format(self.id), BT: int(time.time()),
              N: "lat", U: "lat", V: round(self.lat, 6)},
             {N: "lon", U: "lon", V: round(self.lon, 6)},
             {N: "bat", U: "%EL", V: round(self.battery, 1)},
         ]
-        if radio is not None:
-            rssi, snr, sf = radio
-            pack.append({N: "rssi", U: "dBm", V: rssi})
-            pack.append({N: "snr",  U: "dB",  V: snr})
-            pack.append({N: "sf",   U: "1",   V: sf})
-        pack.append({N: "seq", U: "1", V: self._seq})
+        if seq is not None:
+            pack.append({N: "seq", U: "1", V: seq})
         for key, val in readings.items():
             if isinstance(val, bool):
                 pack.append({N: key, VB: val})
