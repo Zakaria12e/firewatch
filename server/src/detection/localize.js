@@ -6,7 +6,8 @@
  * Retourne { lat, lon, uncertainty_m }.
  */
 
-import { distance } from "../geo.js"
+import { distance, offset } from "../geo.js"
+import { isCamera, refineWithBearing } from "./camera.js"
 
 /**
  * Localise le foyer à partir des capteurs suspects.
@@ -19,6 +20,22 @@ import { distance } from "../geo.js"
 export function localizeFire(suspects, allNodes, wind) {
   if (!suspects.length) return null
 
+  // Une caméra thermique ne sent rien à sa position : elle donne un relèvement.
+  // Elle est écartée du barycentre et sert à affiner la position.
+  const cams = suspects.filter((n) => isCamera(n) && n.indicators?.hotspot)
+  const sensors = suspects.filter((n) => !isCamera(n))
+  if (!sensors.length) {
+    const c = cams[0]
+    if (!c) return null
+    const hb = c.readings?.hot_bearing ?? 0
+    const p = offset(c, 400 * Math.cos((hb * Math.PI) / 180), 400 * Math.sin((hb * Math.PI) / 180))
+    return { lat: p.lat, lon: p.lon, uncertainty_m: 400, refinedBy: c.id }
+  }
+  const pos = barycenter(sensors, allNodes)
+  return cams.reduce((p, c) => refineWithBearing(p, c), pos)
+}
+
+function barycenter(suspects, allNodes) {
   // Si un seul suspect avec flamme : c'est lui
   const flaming = suspects.filter((n) => n.indicators?.flame || n.indicators?.hotspot)
   if (flaming.length === 1 && suspects.length === 1) {

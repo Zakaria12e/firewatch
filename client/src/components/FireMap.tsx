@@ -13,7 +13,7 @@ import { useEffectsQuality, useReducedMotion, useShowFps } from "@/map3d/quality
 import { GATEWAY_RANGE_M } from "@/map3d/fx/devices"
 import { fireTool } from "@/lib/fireTool"
 import { FALSE_DRAG_PREFIX, FALSE_SOURCES } from "@/lib/falseSources"
-import type { FalseSourceKind, Terrain } from "@/types"
+import type { FalseSourceKind, Terrain, CameraTask } from "@/types"
 import { IgnitionMarker, MapContextMenu } from "./FireIgnition"
 import {
   ignitionGeoJSON, movePending, simplifyLine, lineLengthM, fireNear, fireNearScreen,
@@ -135,6 +135,20 @@ function gatewayGeoJSON(devices: WorldDevice[]): FeatureCollection {
   return {
     type: "FeatureCollection",
     features: gws.map((gw) => ({ ...circlePolygon(gw.lat, gw.lon, GATEWAY_RANGE_M, 72), properties: { id: gw.id } })),
+  }
+}
+
+/** Ligne de visée caméra → foyer estimé (ordre du serveur en pré-alerte). */
+function aimGeoJSON(task: CameraTask | null | undefined, devices: WorldDevice[]): FeatureCollection {
+  const cam = task?.camId ? devices.find((d) => d.id === task.camId) : undefined
+  if (!task || !cam) return { type: "FeatureCollection", features: [] }
+  return {
+    type: "FeatureCollection",
+    features: [{
+      type: "Feature",
+      properties: { state: task.verdict?.state ?? "orientation" },
+      geometry: { type: "LineString", coordinates: [[cam.lon, cam.lat], [task.target.lon, task.target.lat]] },
+    }],
   }
 }
 
@@ -743,6 +757,7 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
   const uncertaintyGJ = useMemo(() => uncertaintyGeoJSON(state.incident?.position), [state.incident?.position])
   const gatewayGJ     = useMemo(() => gatewayGeoJSON(worldDevices),        [worldDevices])
   const cameraGJ      = useMemo(() => cameraGeoJSON(worldDevices),         [worldDevices])
+  const aimGJ         = useMemo(() => aimGeoJSON(alertLevel.camera, worldDevices), [alertLevel.camera, worldDevices])
   const radioGJ       = useMemo(() => radioLinksGeoJSON(worldDevices, nodeById), [worldDevices, nodeById])
 
   // -------------------------------------------------------------------------
@@ -880,6 +895,17 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
             paint={{ "fill-color": "#FF5A1F", "fill-opacity": 0.08 }} />
           <Layer id="cameras-outline" type="line"
             paint={{ "line-color": "#FF5A1F", "line-opacity": 0.45, "line-width": 1 }} />
+        </Source>
+
+        {/* ── Visée de la caméra orientée par le serveur (caméra → foyer estimé) ── */}
+        <Source id="camera-aim" type="geojson" data={aimGJ}>
+          <Layer id="camera-aim-glow" type="line" layout={{ "line-cap": "round" }}
+            paint={{ "line-color": ["case", ["==", ["get", "state"], "confirme"], "#E0260E", "#FF5A1F"], "line-width": 7, "line-opacity": 0.22, "line-blur": 4 }} />
+          <Layer id="camera-aim-line" type="line" layout={{ "line-cap": "round" }}
+            paint={{
+              "line-color": ["case", ["==", ["get", "state"], "confirme"], "#E0260E", ["==", ["get", "state"], "infirme"], "rgba(255,255,255,0.6)", "#FF5A1F"],
+              "line-width": 2, "line-dasharray": [2, 1.5],
+            }} />
         </Source>
 
         {/* ── Liens radio capteur → passerelle (couleur selon le RSSI) ── */}

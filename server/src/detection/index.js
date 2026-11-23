@@ -15,6 +15,7 @@ import { classifyCluster, isFogSmoke } from "./classifier.js"
 import { fusionScore, alertLevel } from "./fusion.js"
 import { localizeFire, clusterSuspects } from "./localize.js"
 import { predict } from "./predict.js"
+import { cameraVerdict, CAMERA } from "./camera.js"
 import { riskIndex } from "../detect.js"
 
 // État interne mutable : partagé entre les appels à evaluate()
@@ -180,6 +181,7 @@ export function evaluate(allNodes, now = Date.now(), context = {}) {
   const clusters = clusterSuspects(suspects, 2000)
 
   let bestResult = null
+  let bestCluster = null
   for (const cluster of clusters) {
     const score = fusionScore(cluster, wind, avgRisk, settings.fusion)
     const level = alertLevel(score, cluster, avgRisk, settings.fusion)
@@ -208,10 +210,31 @@ export function evaluate(allNodes, now = Date.now(), context = {}) {
       events,
       defects,
     }
-    if (!bestResult || score > bestResult.score) bestResult = result
+    if (!bestResult || score > bestResult.score) { bestResult = result; bestCluster = cluster }
   }
 
   if (!bestResult) return calm()
+
+  // ----------------------------------------------------------------
+  // Étape 6 : caméra thermique assignée (context.cameraTask) : sa mesure renforce
+  // (point chaud → indicateur thermique, déjà dans la fusion) ou infirme l'alerte
+  // ----------------------------------------------------------------
+  const task = context.cameraTask
+  if (task?.camId && task.target) {
+    const cam = annotated.find((n) => n.id === task.camId)
+    if (cam && now - cam.ts < 60_000 && cam.health.fault === "ok") {
+      const v = cameraVerdict(cam, task.target, { tmaxHot: settings.thresholds?.tmaxHot ?? 60, los: task.los !== false })
+      bestResult.camera = { ...v, target: task.target }
+      if (v.state === "infirme") {
+        // Rien de chaud là où la caméra regarde : confiance réduite (une flamme
+        // avec de la fumée reste une confirmation : la caméra peut être masquée)
+        const score = Math.round(bestResult.score * CAMERA.infirmFactor)
+        const level = alertLevel(score, bestCluster, avgRisk, settings.fusion)
+        bestResult.camera.scoreBefore = bestResult.score
+        bestResult = { ...bestResult, score, level, confirmed: level === "feu_confirmé" }
+      }
+    }
+  }
   return { ...bestResult, falseAlert: falseAlerts[0] ?? null, falseAlerts }
 }
 

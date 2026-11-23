@@ -5,6 +5,7 @@ et ne publie que les mesures de son capteur.
 from __future__ import annotations
 
 import math
+import time
 
 from .base import Device, _dist_m, bearing_deg
 from .station import Station
@@ -47,6 +48,39 @@ class ThermalCamera(Station):
     FOV_DEG = 110.0
     RANGE_M = 800.0
     MAST_M = 8.0
+    SERVO_DEG_S = 30.0   # vitesse de la tourelle (°/s, temps réel)
+
+    def __init__(self, device_id, lat, lon, period, azimuth=0.0):
+        super().__init__(device_id, lat, lon, period, azimuth)
+        self._az_target = None
+        self._az_last = time.time()
+
+    def aim(self, azimuth):
+        """Ordre d'orientation reçu du serveur (downlink) : la tourelle pivote vers l'azimut."""
+        self._update_az()
+        self._az_target = float(azimuth) % 360.0
+
+    def stop_aim(self):
+        """Orientation manuelle par l'opérateur : l'ordre en cours est abandonné."""
+        self._az_target = None
+
+    def _update_az(self):
+        now = time.time()
+        dt = now - self._az_last
+        self._az_last = now
+        if self._az_target is None or self.fault in ("offline", "stuck"):
+            return
+        diff = ((self._az_target - self.azimuth + 540.0) % 360.0) - 180.0
+        step = self.SERVO_DEG_S * dt
+        if abs(diff) <= step:
+            self.azimuth = self._az_target
+            self._az_target = None
+        else:
+            self.azimuth = (self.azimuth + math.copysign(step, diff)) % 360.0
+
+    def to_dict(self):
+        self._update_az()
+        return super().to_dict()
 
     def _visible(self, world, lat, lon):
         """Ligne de vue caméra → cellule (relief + canopée)."""
@@ -64,6 +98,7 @@ class ThermalCamera(Station):
         return True
 
     def read_sensors(self, world):
+        self._update_az()
         w = world.weather
         ambient = w["temp"] + self._temp_offset
         half = self.FOV_DEG / 2.0

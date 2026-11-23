@@ -119,7 +119,7 @@ export interface LastPacket {
   minPeriodS?: number
   /** secondes simulées par seconde réelle */
   timeFactor?: number
-  downlink?: { period: number; siren: boolean; hex: string; bytes: number }
+  downlink?: { period: number; siren: boolean; azimuth?: number; hex: string; bytes: number }
 }
 
 export interface InscriptionInfo extends Omit<LastPacket, "fields"> {
@@ -171,7 +171,7 @@ export interface ThreatenedPlace {
 
 export interface TimelineEvent {
   /** niveau d'alerte, ou « fausse_alerte » */
-  type: AlertLevel | "fausse_alerte"
+  type: AlertLevel | "fausse_alerte" | "caméra"
   at: number
   label?: string
   reason?: string
@@ -180,7 +180,7 @@ export interface TimelineEvent {
 /** Événement du journal (serveur, socket « event », GET /api/events). */
 export interface FwEvent {
   id: number
-  type: "niveau" | "fausse_alerte" | "santé" | "zone" | "reset"
+  type: "niveau" | "fausse_alerte" | "santé" | "zone" | "reset" | "caméra"
   at: number
   level?: AlertLevel
   kind?: string
@@ -339,11 +339,36 @@ export interface FireWatchState {
   simulatorConnected: boolean
 }
 
+/** Verdict de la caméra thermique assignée (serveur). */
+export interface CameraVerdict {
+  id: string
+  state: "orientation" | "confirme" | "infirme" | "hors_portée"
+  bearing: number
+  distance: number
+  azimuth: number | null
+  tmax?: number
+  hotBearing?: number
+  scoreBefore?: number
+}
+
+/** Caméra orientée par le serveur vers le foyer estimé (pré-alerte et plus). */
+export interface CameraTask {
+  camId: string | null
+  target: { lat: number; lon: number }
+  bearing?: number
+  distance?: number
+  los?: boolean
+  inRange?: boolean
+  at: number
+  verdict?: CameraVerdict | null
+}
+
 export interface AlertLevelPayload {
   level: AlertLevel
   score: number
   riskIndex: { value: number }
   wind?: { speed: number; from: number }
+  camera?: CameraTask | null
 }
 
 export interface DetectionEvent {

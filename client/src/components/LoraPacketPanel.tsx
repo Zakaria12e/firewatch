@@ -253,6 +253,9 @@ export function LoraPacketPanel({ node }: { node: FireNode }) {
               <span style={{ color: C.text2 }}>
                 Réponse CoAP 2.04 · période <b className="tabular" style={{ color: C.text }}>{pkt.downlink.period} s</b>,
                 sirène <b style={{ color: pkt.downlink.siren ? C.fire : C.text }}>{pkt.downlink.siren ? "oui" : "non"}</b>
+                {pkt.downlink.azimuth !== undefined && (
+                  <>, orientation <b className="tabular" style={{ color: C.fire }}>{pkt.downlink.azimuth}°</b></>
+                )}
               </span>
               <span className="font-mono tabular whitespace-nowrap" style={{ color: C.text4 }}>{pkt.downlink.hex} · {pkt.downlink.bytes} o</span>
             </div>

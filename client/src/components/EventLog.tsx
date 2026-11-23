@@ -23,13 +23,15 @@ function dotColor(e: FwEvent): string {
   if (e.type === "niveau") return e.level === "veille" ? C.gray : levelColor(e.level ?? "")
   if (e.type === "fausse_alerte") return C.ok
   if (e.type === "santé") return e.kind === "batterie_faible" ? C.low : C.fire
+  if (e.type === "caméra") return e.kind === "confirme" ? C.red : e.kind === "infirme" ? C.text2 : C.fire
   return C.gray
 }
 
 export function EventLog({ events, max = 60 }: { events: FwEvent[]; max?: number }) {
   const [filter, setFilter] = useState<Filter>("all")
   const list = useMemo(
-    () => events.filter((e) => filter === "all" || e.type === filter).slice(-max).reverse(),
+    // Les ordres et verdicts de la caméra suivent les niveaux d'alerte
+    () => events.filter((e) => filter === "all" || e.type === filter || (filter === "niveau" && e.type === "caméra")).slice(-max).reverse(),
     [events, filter, max],
   )
   return (

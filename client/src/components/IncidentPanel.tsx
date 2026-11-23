@@ -1,6 +1,7 @@
 import { Flame, MapPin, Navigation, Clock, TriangleAlert, Shield, Eye, CheckCircle } from "lucide-react"
 import { useEffect, useState } from "react"
-import type { Incident, AlertLevelPayload, FwEvent } from "@/types"
+import { Camera } from "lucide-react"
+import type { Incident, AlertLevelPayload, FwEvent, CameraTask } from "@/types"
 import { C, levelColor as colorOfLevel, levelLabel } from "@/lib/palette"
 import { EventLog, FalseAlertCard } from "./EventLog"
 
@@ -55,7 +56,7 @@ function Timeline({ events }: { events: { type: string; at: number; label?: stri
       <div className="absolute left-[7px] top-2 bottom-2 w-px bg-white/10" />
       <div className="flex flex-col gap-2">
         {events.map((ev, i) => {
-          const color = ev.type === "fausse_alerte" ? C.ok : colorOfLevel(ev.type)
+          const color = ev.type === "fausse_alerte" ? C.ok : ev.type === "caméra" ? C.fire : colorOfLevel(ev.type)
           const t = new Date(ev.at)
           const time = `${t.getHours().toString().padStart(2, "0")}:${t.getMinutes().toString().padStart(2, "0")}:${t.getSeconds().toString().padStart(2, "0")}`
           return (
@@ -63,7 +64,7 @@ function Timeline({ events }: { events: { type: string; at: number; label?: stri
               <div className="w-3.5 h-3.5 rounded-full border-2 shrink-0 relative z-10"
                 style={{ background: `${color}1a`, borderColor: color }} />
               <div className="flex-1 flex justify-between items-baseline">
-                <span className="text-[10px] font-medium" style={{ color: ev.type === "fausse_alerte" ? C.text2 : color }}>
+                <span className="text-[10px] font-medium" style={{ color: ev.type === "fausse_alerte" || ev.type === "caméra" ? C.text2 : color }}>
                   {ev.label ?? levelLabel(ev.type)}
                 </span>
                 <span className="text-[9px] tabular" style={{ color: "rgba(235,235,245,0.3)" }}>{time}</span>
@@ -81,6 +82,44 @@ interface Props {
   alertLevel: AlertLevelPayload
   events: FwEvent[]
   sendCommand: (type: string, payload?: Record<string, unknown>) => void
+}
+
+const CAMERA_STATE: Record<string, { label: string; color: string }> = {
+  orientation: { label: "Orientation en cours", color: C.fire },
+  confirme: { label: "Point chaud confirmé", color: C.red },
+  infirme: { label: "Rien de chaud vers la zone", color: C.text2 },
+  hors_portée: { label: "Zone hors de portée", color: C.text3 },
+}
+
+/** Caméra assignée : azimut ordonné, distance, verdict de sa dernière image. */
+function CameraStatus({ task }: { task: CameraTask }) {
+  if (!task.camId) {
+    return (
+      <div className="flex items-center gap-2 text-[11px] px-3 py-2 rounded-xl" style={{ background: C.fill, color: C.text3 }}>
+        <Camera className="w-3.5 h-3.5 shrink-0" /> Aucune caméra thermique à portée du foyer
+      </div>
+    )
+  }
+  const v = task.verdict
+  const st = CAMERA_STATE[v?.state ?? "orientation"]
+  return (
+    <div className="px-3 py-2.5 rounded-xl" style={{ background: C.fill, border: `1px solid ${C.line}` }}>
+      <div className="flex items-center gap-2">
+        <Camera className="w-3.5 h-3.5 shrink-0" style={{ color: st.color }} />
+        <span className="text-[11px] font-semibold" style={{ color: C.text }}>Caméra {task.camId}</span>
+        <span className="text-[10px] ml-auto font-medium" style={{ color: st.color }}>{st.label}</span>
+      </div>
+      <div className="grid grid-cols-3 gap-1.5 mt-2 text-[10px]" style={{ color: C.text3 }}>
+        <div>Azimut<div className="text-[12px] font-semibold tabular" style={{ color: C.text }}>{v?.azimuth ?? "—"}° <span style={{ color: C.text4 }}>/ {task.bearing ?? "—"}°</span></div></div>
+        <div>Distance<div className="text-[12px] font-semibold tabular" style={{ color: C.text }}>{task.distance ?? "—"} m</div></div>
+        <div>T. max<div className="text-[12px] font-semibold tabular" style={{ color: C.text }}>{v?.tmax !== undefined ? `${Math.round(v.tmax)} °C` : "—"}</div></div>
+      </div>
+      {v?.state === "infirme" && v.scoreBefore !== undefined && (
+        <div className="text-[10px] mt-1.5" style={{ color: C.text3 }}>Confiance réduite : {v.scoreBefore} → score actuel</div>
+      )}
+      {task.los === false && <div className="text-[10px] mt-1.5" style={{ color: C.text3 }}>Ligne de vue masquée par le relief</div>}
+    </div>
+  )
 }
 
 /** Dernière fausse alerte évitée tant qu'elle est récente, et horloge du panneau (5 s). */
@@ -205,6 +244,9 @@ export function IncidentPanel({ incident, alertLevel, events, sendCommand }: Pro
               : "Anomalie détectée — en cours d'évaluation."}
           </div>
         )}
+
+        {/* Caméra thermique orientée par le serveur */}
+        {alertLevel.camera && <CameraStatus task={alertLevel.camera} />}
 
         {/* Capteurs suspects (suspicion) */}
         {level === "suspicion" && incident?.suspects && incident.suspects.length > 0 && (

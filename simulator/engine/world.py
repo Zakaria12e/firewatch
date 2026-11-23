@@ -175,6 +175,8 @@ class World:
         elif t == "device_rotate":
             dev = self.devices.get(cmd.get("id"))
             if dev:
+                if hasattr(dev, "stop_aim"):
+                    dev.stop_aim()
                 dev.azimuth = float(cmd.get("azimuth", 0)) % 360.0
         elif t == "device_remove":
             self.devices.pop(cmd.get("id"), None)

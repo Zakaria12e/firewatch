@@ -114,6 +114,17 @@ describe("updateBaseline", () => {
     expect(z).toBeGreaterThan(4)
   })
 
+  it("vitesse de montée sur au moins 30 s : le bruit entre deux paquets rapprochés n'en est pas une", () => {
+    let st = null
+    let out
+    // bruit ±0,4 °C toutes les 2 s : pas de vitesse significative
+    for (let i = 0; i < 30; i++) out = updateBaseline(st, 25 + (i % 2 ? 0.4 : -0.4), NOW + i * 2000, "temp"), (st = out.state)
+    expect(Math.abs(out.ratePerMin)).toBeLessThan(2)
+    // vraie montée de 12 °C/min pendant 40 s
+    for (let i = 0; i < 20; i++) out = updateBaseline(st, 25 + 0.4 * (i + 1), NOW + 60_000 + i * 2000, "temp"), (st = out.state)
+    expect(out.ratePerMin).toBeGreaterThan(8)
+  })
+
   it("n'adapte pas la baseline lors d'un pic (z > 3)", () => {
     let state = null
     ;({ state } = updateBaseline(null, 25, NOW, "temp"))

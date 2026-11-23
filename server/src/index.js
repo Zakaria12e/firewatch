@@ -14,6 +14,8 @@ import { evaluate } from "./detection/index.js"
 import { distance, inPolygon, offset } from "./geo.js"
 import { ROADS, VILLAGES, PARCELS, TERRAIN } from "./gis.js"
 import { FALSE_ALERT_LABEL } from "./detection/classifier.js"
+import { chooseCamera, isCamera } from "./detection/camera.js"
+import { lineOfSight } from "./dem.js"
 import { initStore, saveMeasurement, history, saveIncident, listIncidents, storeMode } from "./store.js"
 import { notify, buildMessage } from "./alerts.js"
 import { getWeather, getWeatherMode, setWeatherMode, setManualWeather, applyPreset } from "./weather.js"
@@ -32,6 +34,10 @@ import { getSettings, getDefaults, updateSettings, resetSettings } from "./setti
 const nodes = new Map()          // id -> nœud
 const healthById = new Map()     // id -> défaut de santé (pipeline §6.2), absent = ok
 let incident = null              // incendie en cours
+// Caméra thermique assignée en pré-alerte : {camId, target, bearing, distance, los, at}
+let cameraTask = null
+let cameraState = null            // dernier verdict annoncé (journal)
+let lastAlertAt = 0               // dernier instant en pré-alerte ou plus
 let sirenOverride = null         // true / false forcé depuis le dashboard, null = auto
 let lastEval = 0
 let lastSuspectAt = 0
@@ -73,6 +79,9 @@ const sirenFor = (node) => {
   return nearFire || inZone30
 }
 
+/** Azimut ordonné à une caméra assignée (undefined pour les autres appareils). */
+const aimFor = (node) => (cameraTask?.camId === node.id ? cameraTask.bearing : undefined)
+
 const publicNode = (n) => {
   const online = Date.now() - n.ts < Math.max(30_000, n.period * 3000)
   return {
@@ -99,6 +108,7 @@ const publicState = async () => {
     places: PLACES,
     sirenOverride,
     simulatorConnected: simConnected,
+    cameraTask,
   }
 }
 
@@ -253,6 +263,8 @@ function resetAll() {
   _pendingTimeline = []
   _prevLevel = "veille"
   falseEpisodes = []
+  cameraTask = null
+  cameraState = null
   // Zones de brûlage déclarées automatiquement (scénario, palette) : retirées
   updateSettings({ burnZones: (getSettings().burnZones || []).filter((z) => !z.auto) })
   pushEvent({ type: "reset", label: "Réinitialisation du monde" })
@@ -323,11 +335,65 @@ function trackFalseAlerts(list, now) {
       nodes: fa.nodes, position: fa.position ?? null,
     })
     console.log(`✅ ${label} (${fa.reason})`)
-    const entry = { type: "fausse_alerte", at: now, label, reason: fa.reason }
-    if (incident?.status === "actif") incident.timeline = [...(incident.timeline || []), entry]
-    else _pendingTimeline.push(entry)
+    addTimeline({ type: "fausse_alerte", at: now, label, reason: fa.reason })
     falseEpisodes.push({ kind: fa.kind, position: fa.position ?? null, lastSeen: now })
   }
+}
+
+const CAMERA_TEXT = {
+  confirme: (v) => `Caméra ${v.id} : point chaud confirmé (${Math.round(v.tmax)} °C, relèvement ${Math.round(v.hotBearing ?? v.bearing)}°)`,
+  infirme: (v) => `Caméra ${v.id} : rien de chaud vers la zone, confiance réduite`,
+  hors_portée: (v) => `Caméra ${v.id} : zone hors de portée ou masquée par le relief`,
+  orientation: (v) => `Caméra ${v.id} : orientation en cours (${v.azimuth ?? "?"}° → ${v.bearing}°)`,
+}
+
+/**
+ * Pré-alerte (ou plus) : la caméra la plus proche du foyer estimé, avec ligne de vue,
+ * reçoit l'ordre de s'orienter (azimut dans sa prochaine réponse CoAP). L'assignation
+ * suit le foyer s'il se déplace de plus de 250 m, et se libère après 60 s sans alerte.
+ */
+function updateCameraTask(result, now) {
+  const alerting = (result.level === "pré-alerte" || result.level === "feu_confirmé") && result.position
+  if (alerting) lastAlertAt = now
+  if (alerting && (!cameraTask || distance(cameraTask.target, result.position) > 250)) {
+    const cams = [...nodes.values()].map(publicNode)
+      .filter((n) => isCamera(n) && n.online && (n.health ?? "ok") === "ok")
+    const target = { lat: result.position.lat, lon: result.position.lon }
+    const pick = chooseCamera(cams, target, lineOfSight)
+    if (pick && (!cameraTask || pick.id !== cameraTask.camId)) {
+      cameraTask = { camId: pick.id, target, bearing: pick.bearing, distance: pick.distance, los: pick.los, inRange: pick.inRange, at: now }
+      cameraState = null
+      const label = `Caméra ${pick.id} orientée vers le foyer estimé`
+      const reason = `azimut ${pick.bearing}°, ${pick.distance} m${pick.los ? "" : ", ligne de vue masquée"}${pick.inRange ? "" : ", au-delà de la portée"}`
+      pushEvent({ type: "caméra", kind: "orientation", label, reason, nodes: [pick.id] })
+      addTimeline({ type: "caméra", at: now, label, reason })
+      console.log(`📷 ${label} (${reason})`)
+    } else if (pick && cameraTask) {
+      cameraTask = { ...cameraTask, target, bearing: pick.bearing, distance: pick.distance, los: pick.los, inRange: pick.inRange }
+    } else if (!pick && !cameraTask) {
+      cameraTask = { camId: null, target, at: now }
+      pushEvent({ type: "caméra", kind: "aucune", label: "Aucune caméra thermique à portée du foyer estimé" })
+    }
+  }
+  // Verdict de la caméra : une ligne de journal à chaque changement
+  const v = result.camera
+  if (cameraTask?.camId && v && v.state !== cameraState && v.state !== "orientation") {
+    cameraState = v.state
+    const label = CAMERA_TEXT[v.state]?.(v) ?? `Caméra ${v.id} : ${v.state}`
+    const reason = v.state === "infirme" ? `score ${v.scoreBefore} → ${result.score}` : undefined
+    pushEvent({ type: "caméra", kind: v.state, label, reason, nodes: [v.id] })
+    addTimeline({ type: "caméra", at: now, label, reason })
+  }
+  if (cameraTask && now - lastAlertAt > 60_000) {
+    cameraTask = null
+    cameraState = null
+  }
+}
+
+/** Ajoute une entrée à la chronologie de l'incident en cours (ou à celle en attente). */
+function addTimeline(entry) {
+  if (incident?.status === "actif") incident.timeline = [...(incident.timeline || []), entry]
+  else _pendingTimeline.push(entry)
 }
 
 async function runDetection() {
@@ -344,6 +410,7 @@ async function runDetection() {
     // Carte statique de la zone (SIG) : piste et hameau
     roads: ROADS,
     villages: VILLAGES,
+    cameraTask,
     settings: { thresholds: settings.thresholds, fusion: settings.fusion },
   }
   // Nœuds qui ont des mesures, reçues après la dernière réinitialisation (sinon les
@@ -363,11 +430,14 @@ async function runDetection() {
   trackFalseAlerts(result.falseAlerts || [], now)
 
   // Émettre le niveau d'alerte courant + vent mesuré par les capteurs (dashboard)
+  updateCameraTask(result, now)
+
   io.emit("alert_level", {
     level: result.level,
     score: result.score,
     riskIndex: result.riskIndex,
     wind: result.wind,
+    camera: cameraTask ? { ...cameraTask, verdict: result.camera ?? null } : null,
   })
 
   // Suivi des transitions de niveau (timeline + journal)
@@ -455,7 +525,7 @@ function ingestSenml(pack, extra) {
   }
   if ("flame" in readings) readings.flame = !!readings.flame
   const status = nodeStatus(readings)
-  const danger = status !== "ok" || incident?.status === "actif"
+  const danger = status !== "ok" || incident?.status === "actif" || cameraTask?.camId === msg.id
   const prev = nodes.get(msg.id)
   const node = {
     ...(prev?.inscription ? { inscription: prev.inscription } : {}),
@@ -572,7 +642,7 @@ coapServer.on("request", (req, res) => {
         }
     nodes.set(reg.id, node)
     console.log(`📝 Inscription ${reg.id} (${reg.kind}, DevAddr ${up.frame.devAddr}, ${up.sizes.compact} o)`)
-    replyCbor(res, "2.04", encodeDownlink({ period: node.period, siren: sirenFor(node) }))
+    replyCbor(res, "2.04", encodeDownlink({ period: node.period, siren: sirenFor(node), azimuth: aimFor(node) }))
     io.emit("node", publicNode(node))
     return
   }
@@ -583,7 +653,7 @@ coapServer.on("request", (req, res) => {
     minPeriodS: up.minPeriodS,
     lastPacket: { ...frameInfo, fields: up.fields, senml: up.senml },
   })
-  const dl = { period: node.period, siren: sirenFor(node) }
+  const dl = { period: node.period, siren: sirenFor(node), azimuth: aimFor(node) }
   const dlBytes = replyCbor(res, "2.04", encodeDownlink(dl))
   node.lastPacket.downlink = { ...dl, hex: Buffer.from(dlBytes).toString("hex"), bytes: dlBytes.length }
   io.emit("node", publicNode(node))

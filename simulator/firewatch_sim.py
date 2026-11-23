@@ -181,7 +181,8 @@ def post_world(host, http_port, world, timeout=2.0):
 def handle_coap_response(device, resp):
     """
     Applique la réponse CoAP (fenêtre de réception LoRaWAN) à l'appareil.
-    Downlink CBOR compact à clés entières : 1 = période (s), 2 = sirène, 4 = réinscription.
+    Downlink CBOR compact à clés entières : 1 = période (s), 2 = sirène, 3 = azimut de la
+    caméra (°), 4 = réinscription.
     """
     if resp is None or not resp.get("payload"):
         return
@@ -191,6 +192,12 @@ def handle_coap_response(device, resp):
         return
     if not isinstance(cmd, dict):
         return
+    az = cmd.get(3)
+    if az is not None and hasattr(device, "aim"):
+        # Caméra thermique : le serveur l'oriente vers la zone en pré-alerte
+        if abs(((float(az) - device.azimuth + 540.0) % 360.0) - 180.0) > 1.0 and                 getattr(device, "_az_target", None) != float(az) % 360.0:
+            print("📷 {} : orientation vers {:.0f}° (ordre du serveur)".format(device.id, float(az)))
+        device.aim(az)
     if cmd.get(4):
         # Le serveur ne connaît pas (plus) cet appareil : il redemande l'inscription
         device.needs_inscription = True
