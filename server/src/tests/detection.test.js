@@ -371,13 +371,10 @@ describe("evaluate – cas d'intégration", () => {
       readings: { temp: 26, hum: 50, smoke: 15, co: 50, flame: false, wind_speed: 3, wind_dir: 100, bat: 90 },
       _nearRoad: true,
     })
-    const result = evaluate([coNode], NOW)
-    if (result.falseAlert) {
-      expect(result.falseAlert.kind).toBe("véhicule")
-    } else {
-      // Si le score est trop bas pour déclencher, on vérifie que ce n'est pas confirmé
-      expect(result.confirmed).toBe(false)
-    }
+    const road = { points: [[coNode.lat - 0.01, coNode.lon + 0.0005], [coNode.lat + 0.01, coNode.lon + 0.0005]] }
+    const result = evaluate([coNode], NOW, { roads: [road] })
+    expect(result.falseAlert?.kind).toBe("véhicule")
+    expect(result.confirmed).toBe(false)
   })
 
   it("brouillard : fumée + hum > 85 % sans CO → fausse alerte, NON inclus dans suspects", () => {
@@ -406,9 +403,8 @@ describe("evaluate – cas d'intégration", () => {
     const burnNode = fireNode("N01", 35.135, -5.215)
     const burnZone = [[35.13, -5.22], [35.14, -5.22], [35.14, -5.21], [35.13, -5.21]]
     const result = evaluate([burnNode], NOW, { burnZones: [burnZone] })
-    if (result.falseAlert) {
-      expect(result.falseAlert.kind).toBe("brûlage_autorisé")
-    }
+    expect(result.falseAlert?.kind).toBe("brûlage_autorisé")
+    expect(result.confirmed).toBe(false)
   })
 
   it("deux foyers : deux clusters → score > 0 et suspects multiples", () => {

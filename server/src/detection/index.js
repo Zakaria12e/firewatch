@@ -11,7 +11,7 @@
 import { checkHealth, updateHistory } from "./health.js"
 import { updateBaseline } from "./baseline.js"
 import { computeIndicators } from "./indicators.js"
-import { classifyFalseAlert } from "./classifier.js"
+import { classifyCluster, isFogSmoke } from "./classifier.js"
 import { fusionScore, alertLevel } from "./fusion.js"
 import { localizeFire, clusterSuspects } from "./localize.js"
 import { predict } from "./predict.js"
@@ -20,6 +20,10 @@ import { riskIndex } from "../detect.js"
 // État interne mutable : partagé entre les appels à evaluate()
 // { [nodeId]: { baseline: { [channel]: state }, history: { [channel]: number[] } } }
 const nodeState = new Map()
+
+// Variation régionale (météo) : dernier instant où chaque appareil a montré l'indicateur
+const REGIONAL_WINDOW_MS = 45_000
+const regionalHits = { tempRise: new Map(), humDrop: new Map() }
 
 /** Vent moyen vectoriel mesuré par les nœuds. */
 function meanWind(nodes) {
@@ -40,7 +44,8 @@ function meanWind(nodes) {
  *
  * @param {object[]} allNodes  – nœuds avec {id, lat, lon, ts, readings, period}
  * @param {number}   now       – Date.now()
- * @param {object}   context   – { burnZones, timeScale, worldWeather?, settings? }
+ * @param {object}   context   – { burnZones, roads, villages, isDay?, timeScale, worldWeather?, settings? }
+ *                               roads / villages : carte statique de la zone (SIG)
  *                               settings = { thresholds, fusion } (page Paramètres)
  * @returns {object}           – résultat de l'évaluation
  */
@@ -109,6 +114,25 @@ export function evaluate(allNodes, now = Date.now(), context = {}) {
     risk: riskIndex(n.readings || {}),
   }))
 
+  // Variation régionale : une hausse de température ou une chute d'humidité vue par la
+  // moitié du réseau en moins de 45 s vient de la météo (front, changement de masse
+  // d'air), pas d'un feu, qui reste local. Les capteurs émettent à des instants
+  // différents : on compte les appareils distincts touchés sur la fenêtre.
+  const capable = withIndicators.filter((n) => Number.isFinite(n.readings?.temp))
+  for (const key of ["tempRise", "humDrop"]) {
+    const hits = regionalHits[key]
+    for (const n of capable) if (n.indicators[key]) hits.set(n.id, now)
+    for (const [id, t] of hits) if (now - t > REGIONAL_WINDOW_MS) hits.delete(id)
+    if (capable.length >= 4 && hits.size / capable.length >= 0.5) {
+      for (const n of capable) {
+        if (!n.indicators[key]) continue
+        const i = { ...n.indicators, [key]: false }
+        i.any = i.flame || i.hotspot || i.smoke || i.co || i.tempRise || i.humDrop
+        n.indicators = i
+      }
+    }
+  }
+
   const wind = meanWind(recent)
   // Indice de risque : seulement les appareils qui mesurent la météo
   const riskNodes = withIndicators.filter((n) => Number.isFinite(n.risk.value))
@@ -118,74 +142,54 @@ export function evaluate(allNodes, now = Date.now(), context = {}) {
 
   // ----------------------------------------------------------------
   // Étape 4 : suspects (au moins un indicateur)
-  // Pré-filtrer les nœuds brouillard : MQ-2 trompé par humidité > 85 %
-  // Ces capteurs sont exclus de la fusion (§6.5)
+  // Capteurs « brouillard » (MQ-2 trompé par l'humidité > 85 %, fumée seule) :
+  // exclus de la fusion, pour qu'un vrai feu voisin reste détectable (§6.5)
   // ----------------------------------------------------------------
   const rawSuspects = withIndicators.filter((n) => n.indicators.any)
+  const isFogOnly = isFogSmoke
+  const fogNodes = rawSuspects.filter(isFogOnly)
+  const suspects = rawSuspects.filter((n) => !isFogOnly(n))
 
-  const fogExcluded = rawSuspects.filter((n) => {
-    const hum = n.readings?.hum ?? 50
-    return n.indicators.smoke && hum > 85 && !n.indicators.co && !n.indicators.flame
+  const falseAlerts = []
+  if (fogNodes.length) {
+    const fa = classifyCluster(fogNodes, gisContext(context, null, wind))
+    if (fa) falseAlerts.push({ ...fa, position: localizeFire(fogNodes, allNodes, wind) })
+  }
+
+  const defects = annotated.filter((n) => n.health.fault !== "ok").map((n) => ({ id: n.id, fault: n.health.fault }))
+  const calm = () => ({
+    level: alertLevel(0, [], avgRisk, settings.fusion),
+    score: 0,
+    confirmed: false,
+    suspects: [],
+    falseAlert: falseAlerts[0] ?? null,
+    falseAlerts,
+    position: null,
+    prediction: null,
+    wind,
+    riskIndex: avgRisk,
+    events,
+    defects,
   })
-  if (fogExcluded.length) {
-    fogExcluded.forEach((n) =>
-      events.push({ type: "fausse_alerte", nodeId: n.id, kind: "brouillard" })
-    )
-  }
-
-  const suspects = rawSuspects.filter((n) => !fogExcluded.includes(n))
-
-  if (!suspects.length) {
-    const falseAlert = fogExcluded.length
-      ? { kind: "brouillard", label: "Fausse fumée – humidité > 85 % (brouillard/condensation)" }
-      : null
-    return {
-      level: alertLevel(0, [], avgRisk, settings.fusion),
-      score: 0,
-      confirmed: false,
-      suspects: [],
-      falseAlert,
-      position: null,
-      prediction: null,
-      wind,
-      riskIndex: avgRisk,
-      events,
-      defects: annotated.filter((n) => n.health.fault !== "ok").map((n) => ({
-        id: n.id, fault: n.health.fault,
-      })),
-    }
-  }
+  if (!suspects.length) return calm()
 
   // ----------------------------------------------------------------
-  // Étape 5 : clusters de suspects (plusieurs foyers possibles)
+  // Étape 5 : groupes de suspects (plusieurs foyers possibles). Chaque groupe est
+  // classé à chaque évaluation : une cause bénigne l'écarte, sinon il est candidat
   // ----------------------------------------------------------------
   const clusters = clusterSuspects(suspects, 2000)
 
-  // Traiter chaque cluster indépendamment ; prendre le plus dangereux
   let bestResult = null
   for (const cluster of clusters) {
     const score = fusionScore(cluster, wind, avgRisk, settings.fusion)
     const level = alertLevel(score, cluster, avgRisk, settings.fusion)
-
-    // Position estimée
     const pos = localizeFire(cluster, allNodes, wind)
 
-    // Classification fausse alerte
-    const context2 = {
-      nearRoad: cluster.some((n) => n._nearRoad),
-      burnZones: context.burnZones || [],
-      villages: [
-        { name: "Chefchaouen", lat: 35.1714, lon: -5.2697 },
-        { name: "Akchour",     lat: 35.237,  lon: -5.175 },
-        { name: "Bab Taza",    lat: 35.0547, lon: -5.1981 },
-      ],
-      estimatedPos: pos,
-      confidence: score,
-      isolated: cluster.length === 1,
+    const fa = classifyCluster(cluster, gisContext(context, pos, wind))
+    if (fa) {
+      falseAlerts.push({ ...fa, position: pos, score, wouldBe: level })
+      continue
     }
-    const firstInd = cluster[0]?.indicators || {}
-    const firstR   = cluster[0]?.readings || {}
-    const falseAlert = classifyFalseAlert(firstInd, firstR, context2)
 
     // Prédiction (si niveau suffisant)
     const prediction = level !== "veille" && level !== "vigilance" && pos
@@ -197,23 +201,35 @@ export function evaluate(allNodes, now = Date.now(), context = {}) {
       score,
       confirmed: level === "feu_confirmé",
       suspects: cluster.map((n) => n.id),
-      falseAlert: falseAlert.kind ? falseAlert : null,
       position: pos,
       prediction,
       wind,
       riskIndex: avgRisk,
-      events: [...events],
-      defects: annotated.filter((n) => n.health.fault !== "ok").map((n) => ({
-        id: n.id, fault: n.health.fault,
-      })),
+      events,
+      defects,
     }
     if (!bestResult || score > bestResult.score) bestResult = result
   }
 
-  return bestResult
+  if (!bestResult) return calm()
+  return { ...bestResult, falseAlert: falseAlerts[0] ?? null, falseAlerts }
+}
+
+/** Contexte de la classification : carte de la zone (SIG) + zones de brûlage déclarées. */
+function gisContext(context, estimatedPos, wind) {
+  return {
+    estimatedPos,
+    wind,
+    burnZones: context.burnZones || [],
+    roads: context.roads || [],
+    villages: context.villages || [],
+    isDay: context.isDay,
+  }
 }
 
 /** Réinitialise l'état interne (pour les tests). */
 export function resetState() {
   nodeState.clear()
+  regionalHits.tempRise.clear()
+  regionalHits.humDrop.clear()
 }

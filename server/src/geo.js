@@ -37,3 +37,29 @@ export function inPolygon(p, poly) {
 
 const DIRS = ["nord", "nord-est", "est", "sud-est", "sud", "sud-ouest", "ouest", "nord-ouest"]
 export const compass = (deg) => DIRS[Math.round(deg / 45) % 8]
+
+/** Distance (m) d'un point au segment [a, b]. */
+export function distanceToSegment(p, a, b) {
+  const B = toLocal(b, a)
+  const P = toLocal(p, a)
+  const len2 = B.north ** 2 + B.east ** 2
+  const t = len2 ? Math.max(0, Math.min(1, (P.north * B.north + P.east * B.east) / len2)) : 0
+  return Math.hypot(P.north - t * B.north, P.east - t * B.east)
+}
+
+/** Distance (m) d'un point à une polyligne [[lat, lon], …]. */
+export function distanceToPolyline(p, pts) {
+  let best = Infinity
+  for (let i = 1; i < pts.length; i++) {
+    const a = { lat: pts[i - 1][0], lon: pts[i - 1][1] }
+    const b = { lat: pts[i][0], lon: pts[i][1] }
+    best = Math.min(best, distanceToSegment(p, a, b))
+  }
+  return best
+}
+
+/** Distance (m) d'un point à un polygone [[lat, lon], …] : 0 à l'intérieur. */
+export function distanceToPolygon(p, poly) {
+  if (inPolygon(p, poly)) return 0
+  return distanceToPolyline(p, [...poly, poly[0]])
+}

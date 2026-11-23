@@ -4,6 +4,11 @@ import {
 import type { Metrics } from "@/types"
 import { SizeLadder } from "@/components/LoraPacketPanel"
 
+const FALSE_LABEL: Record<string, string> = {
+  "brûlage_autorisé": "brûlage", "véhicule": "véhicule", "brouillard": "brouillard",
+  "soleil": "soleil", "barbecue_probable": "barbecue",
+}
+
 interface Props {
   metrics: Metrics | null
 }
@@ -98,6 +103,7 @@ export function PerformancePage({ metrics }: Props) {
           <StatCard delay={3}
             label="Fausses alertes évitées"
             value={falseAlerts.avoided}
+            sub={Object.entries(falseAlerts.byKind ?? {}).map(([k, n]) => `${FALSE_LABEL[k] ?? k} ${n}`).join(" · ") || "aucune pour l'instant"}
             color="#ffffff"
           />
           <StatCard delay={4}

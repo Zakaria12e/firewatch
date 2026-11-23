@@ -40,8 +40,10 @@ export function checkHealth(node, now = Date.now()) {
   const reasons = []
 
   // 1. Hors ligne : pas de message depuis 3 × la période
+  // Période attendue : à un changement de période, l'envoi suivant était déjà programmé
+  // avec l'ancienne (expectedGap = la plus longue des deux)
   const silence = (now - node.ts) / 1000   // en secondes
-  if (silence > 3 * (node.period || 30)) {
+  if (silence > 3 * (node.expectedGap || node.period || 30)) {
     return { fault: "hors_ligne", reasons: [`silence ${Math.round(silence)}s`] }
   }
 

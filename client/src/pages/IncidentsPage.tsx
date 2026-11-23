@@ -10,6 +10,10 @@ const LEVEL_COLOR: Record<AlertLevel, string> = {
   maîtrisé:      "text-white/70",
 }
 
+// Entrées de chronologie hors niveaux (fausse alerte évitée) : pastille OK
+const bgOf = (t: string) => LEVEL_BG[t as AlertLevel] ?? "bg-[#30D158]"
+const colorOf = (t: string) => LEVEL_COLOR[t as AlertLevel] ?? "text-white/60"
+
 const LEVEL_BG: Record<AlertLevel, string> = {
   veille:        "bg-[#474747]",
   vigilance:     "bg-[#6B2510]",
@@ -59,7 +63,7 @@ function IncidentTimeline({ incident }: { incident: Incident }) {
               style={{ left: `${Math.min(99, pct)}%` }}
               title={`${ev.type} – ${fmt(ev.at)}`}
             >
-              <div className={`w-4 h-4 rounded-full border-2 border-background ${LEVEL_BG[ev.type]}`} />
+              <div className={`w-4 h-4 rounded-full border-2 border-background ${bgOf(ev.type)}`} />
             </div>
           )
         })}
@@ -72,8 +76,8 @@ function IncidentTimeline({ incident }: { incident: Incident }) {
         </div>
         {events.map((ev, i) => (
           <div key={i} className="flex items-center gap-2 text-xs">
-            <div className={`w-2 h-2 rounded-full shrink-0 ${LEVEL_BG[ev.type]}`} />
-            <span className={LEVEL_COLOR[ev.type]}>{ev.type}</span>
+            <div className={`w-2 h-2 rounded-full shrink-0 ${bgOf(ev.type)}`} />
+            <span className={colorOf(ev.type)}>{ev.label ?? ev.type}</span>
             <span className="text-muted-foreground">{fmt(ev.at)}</span>
             <span className="text-muted-foreground">
               +{Math.round((ev.at - start) / 1000)} s depuis le début

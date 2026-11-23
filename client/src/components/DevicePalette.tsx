@@ -4,9 +4,10 @@ import type { DeviceKind } from "@/types"
 import { C, alpha, KIND_META } from "@/lib/palette"
 import { SegmentedControl } from "./SegmentedControl"
 import { fireTool, useFireSize, FIRE_SIZE_LABEL, type FireSize } from "@/lib/fireTool"
+import { FALSE_SOURCES, FALSE_KINDS, FALSE_DRAG_PREFIX } from "@/lib/falseSources"
 
 interface PaletteItem {
-  kind: DeviceKind | "__fire__" | "__water__"
+  kind: string
   label: string
   model: string
   tooltip: string
@@ -42,6 +43,30 @@ const TOOLS: PaletteItem[] = [
   { kind: "__fire__",  label: "Feu",      model: "Allumer",     tooltip: "Glisser sur la carte : point de départ (3 s pour le déplacer ou l'annuler). Maj + glisser sur la carte : ligne de feu", Icon: Flame,    accent: C.fire },
   { kind: "__water__", label: "Canadair", model: "Larguer eau", tooltip: "Larguer de l'eau – éteint les cellules proches", Icon: Droplets },
 ]
+
+const FALSE_ITEMS: PaletteItem[] = FALSE_KINDS.map((k) => ({
+  kind: `${FALSE_DRAG_PREFIX}${k}`,
+  label: FALSE_SOURCES[k].short,
+  model: "fausse source",
+  tooltip: FALSE_SOURCES[k].tooltip,
+  Icon: FALSE_SOURCES[k].Icon,
+}))
+
+/** Fausse source : petite tuile (icône + nom), glissée sur la carte. */
+function FalseCard({ item }: { item: PaletteItem }) {
+  return (
+    <div
+      draggable
+      onDragStart={(e) => { e.dataTransfer.setData("kind", item.kind); e.dataTransfer.effectAllowed = "copy" }}
+      title={item.tooltip}
+      className="spring-hover flex flex-col items-center gap-1 py-1.5 rounded-lg cursor-grab active:cursor-grabbing select-none"
+      style={{ background: C.fill, border: "1px solid rgba(255,255,255,0.06)" }}
+    >
+      <item.Icon className="w-3.5 h-3.5" style={{ color: C.text2 }} />
+      <span className="text-[9px] font-medium leading-none" style={{ color: C.text2 }}>{item.label}</span>
+    </div>
+  )
+}
 
 function DeviceCard({ item }: { item: PaletteItem }) {
   const handleDragStart = (e: React.DragEvent) => {
@@ -137,31 +162,43 @@ export function DevicePalette({ weatherMode = "reel", onWeatherModeChange, onWea
       className="glass anim-left fixed top-16 bottom-3 z-30 flex flex-col overflow-hidden"
       style={{ left: "var(--dock-space)", width: 190, borderRadius: 18 }}
     >
-      <div className="px-2.5 pt-3 pb-1 shrink-0">
-        <p className="text-[9px] uppercase font-medium mb-2" style={{ color: C.text4, letterSpacing: "0.1em" }}>Appareils</p>
-        <div className="grid grid-cols-2 gap-1.5">
-          {DEVICES.map((item) => <DeviceCard key={item.kind} item={item} />)}
+      {/* Tout le contenu défile : la palette tient à toutes les hauteurs d'écran */}
+      <div className="flex-1 min-h-0 fw-scroll">
+        <div className="px-2.5 pt-3 pb-1">
+          <p className="text-[9px] uppercase font-medium mb-2" style={{ color: C.text4, letterSpacing: "0.1em" }}>Appareils</p>
+          <div className="grid grid-cols-2 gap-1.5">
+            {DEVICES.map((item) => <DeviceCard key={item.kind} item={item} />)}
+          </div>
         </div>
-      </div>
 
-      <div className="mx-3 my-1 h-px shrink-0" style={{ background: C.line }} />
+        <div className="mx-3 my-1 h-px" style={{ background: C.line }} />
 
-      <div className="px-2.5 pb-1 shrink-0">
-        <p className="text-[9px] uppercase font-medium mb-2" style={{ color: C.text4, letterSpacing: "0.1em" }}>Outils</p>
-        <div className="grid grid-cols-2 gap-1.5">
-          {TOOLS.map((item) => <DeviceCard key={item.kind} item={item} />)}
+        <div className="px-2.5 pb-1">
+          <p className="text-[9px] uppercase font-medium mb-2" style={{ color: C.text4, letterSpacing: "0.1em" }}>Outils</p>
+          <div className="grid grid-cols-2 gap-1.5">
+            {TOOLS.map((item) => <DeviceCard key={item.kind} item={item} />)}
+          </div>
+          <FireSizePicker />
         </div>
-        <FireSizePicker />
-      </div>
 
-      <div className="mx-3 my-1 h-px shrink-0" style={{ background: C.line }} />
+        <div className="mx-3 my-1 h-px" style={{ background: C.line }} />
 
-      <div className="flex-1 fw-scroll px-1.5">
-        <WeatherPanel
-          weatherMode={weatherMode}
-          onModeChange={onWeatherModeChange ?? (() => {})}
-          onPreset={onWeatherPreset ?? (() => {})}
-        />
+        <div className="px-2.5 pb-1">
+          <p className="text-[9px] uppercase font-medium mb-2" style={{ color: C.text4, letterSpacing: "0.1em" }}>Fausses sources</p>
+          <div className="grid grid-cols-3 gap-1">
+            {FALSE_ITEMS.map((item) => <FalseCard key={item.kind} item={item} />)}
+          </div>
+        </div>
+
+        <div className="mx-3 my-1 h-px" style={{ background: C.line }} />
+
+        <div className="px-1.5 pb-2">
+          <WeatherPanel
+            weatherMode={weatherMode}
+            onModeChange={onWeatherModeChange ?? (() => {})}
+            onPreset={onWeatherPreset ?? (() => {})}
+          />
+        </div>
       </div>
     </div>
   )

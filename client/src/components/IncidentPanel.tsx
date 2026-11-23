@@ -1,6 +1,11 @@
 import { Flame, MapPin, Navigation, Clock, TriangleAlert, Shield, Eye, CheckCircle } from "lucide-react"
-import type { Incident, AlertLevelPayload } from "@/types"
-import { levelColor as colorOfLevel, levelLabel } from "@/lib/palette"
+import { useEffect, useState } from "react"
+import type { Incident, AlertLevelPayload, FwEvent } from "@/types"
+import { C, levelColor as colorOfLevel, levelLabel } from "@/lib/palette"
+import { EventLog, FalseAlertCard } from "./EventLog"
+
+/** Une fausse alerte évitée reste affichée en carte pendant 45 s. */
+const FALSE_CARD_MS = 45_000
 
 const DETAIL_LEVELS = new Set(["pré-alerte", "feu_confirmé", "maîtrisé"])
 
@@ -42,7 +47,7 @@ function CircularGauge({ value, color }: { value: number; color: string }) {
 }
 
 /** Ligne de temps verticale */
-function Timeline({ events }: { events: { type: string; at: number }[] }) {
+function Timeline({ events }: { events: { type: string; at: number; label?: string }[] }) {
   if (!events.length) return null
   return (
     <div className="relative ml-1">
@@ -50,7 +55,7 @@ function Timeline({ events }: { events: { type: string; at: number }[] }) {
       <div className="absolute left-[7px] top-2 bottom-2 w-px bg-white/10" />
       <div className="flex flex-col gap-2">
         {events.map((ev, i) => {
-          const color = colorOfLevel(ev.type)
+          const color = ev.type === "fausse_alerte" ? C.ok : colorOfLevel(ev.type)
           const t = new Date(ev.at)
           const time = `${t.getHours().toString().padStart(2, "0")}:${t.getMinutes().toString().padStart(2, "0")}:${t.getSeconds().toString().padStart(2, "0")}`
           return (
@@ -58,8 +63,8 @@ function Timeline({ events }: { events: { type: string; at: number }[] }) {
               <div className="w-3.5 h-3.5 rounded-full border-2 shrink-0 relative z-10"
                 style={{ background: `${color}1a`, borderColor: color }} />
               <div className="flex-1 flex justify-between items-baseline">
-                <span className="text-[10px] font-medium" style={{ color }}>
-                  {levelLabel(ev.type)}
+                <span className="text-[10px] font-medium" style={{ color: ev.type === "fausse_alerte" ? C.text2 : color }}>
+                  {ev.label ?? levelLabel(ev.type)}
                 </span>
                 <span className="text-[9px] tabular" style={{ color: "rgba(235,235,245,0.3)" }}>{time}</span>
               </div>
@@ -74,10 +79,26 @@ function Timeline({ events }: { events: { type: string; at: number }[] }) {
 interface Props {
   incident: Incident | null
   alertLevel: AlertLevelPayload
+  events: FwEvent[]
   sendCommand: (type: string, payload?: Record<string, unknown>) => void
 }
 
-export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
+/** Dernière fausse alerte évitée tant qu'elle est récente, et horloge du panneau (5 s). */
+function useRecentFalseAlert(events: FwEvent[]): { recent: FwEvent | null; now: number } {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 5000)
+    return () => window.clearInterval(id)
+  }, [])
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]
+    if (e.type === "fausse_alerte") return { recent: now - e.at < FALSE_CARD_MS ? e : null, now }
+  }
+  return { recent: null, now }
+}
+
+export function IncidentPanel({ incident, alertLevel, events, sendCommand }: Props) {
+  const { recent: recentFalse, now } = useRecentFalseAlert(events)
   const level = alertLevel.level
   const showDetails = DETAIL_LEVELS.has(level)
   const levelColor = colorOfLevel(level)
@@ -149,10 +170,13 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
       </div>
 
       {/* Corps scrollable */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
+      <div className="flex-1 overflow-y-auto fw-scroll px-4 py-3 flex flex-col gap-3">
+
+        {/* Fausse alerte évitée (dernier épisode) */}
+        {recentFalse && <FalseAlertCard event={recentFalse} />}
 
         {/* Veille – état nominal */}
-        {level === "veille" && !incident && (
+        {level === "veille" && !incident && !recentFalse && (
           <div className="flex flex-col items-center justify-center gap-3 py-6 text-center">
             <Shield className="w-10 h-10 opacity-15" style={{ color: "rgba(235,235,245,0.6)" }} />
             <div>
@@ -292,7 +316,7 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
               <Clock className="w-3 h-3" />
               <span className="text-[11px]">
                 {incident.status === "actif"
-                  ? `Actif depuis ${Math.round((Date.now() - incident.startedAt) / 60000)} min`
+                  ? `Actif depuis ${Math.max(0, Math.round((now - incident.startedAt) / 60000))} min`
                   : `Maîtrisé – ${incident.reason ?? ""}`}
               </span>
             </div>
@@ -309,6 +333,11 @@ export function IncidentPanel({ incident, alertLevel, sendCommand }: Props) {
             )}
           </>
         )}
+
+        {/* Journal d'événements */}
+        <div className="mt-auto pt-1">
+          <EventLog events={events} />
+        </div>
       </div>
 
       {/* Actions */}

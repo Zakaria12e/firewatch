@@ -21,23 +21,31 @@ class Station(Device):
         """Mesures physiques (sans panne) en fonction de l'état du monde (CA + météo)."""
         w = world.weather
         heat, smoke_exp = world.fire_exposure(self.lat, self.lon)
+        # Fausses sources (brûlage, barbecue, véhicule, brouillard, soleil) : même physique
+        fx = world.false_exposure(self.lat, self.lon)
+        heat = min(1.0, heat + fx["heat"])
+        smoke_exp = min(1.0, smoke_exp + fx["smoke"])
 
-        # Température : base météo + hausse si feu proche + biais + bruit
+        # Température : base météo + hausse si feu proche + soleil sur le boîtier + bruit
         temp = (w["temp"] + self._temp_offset
-                + heat * 45
+                + heat * 45 + fx["temp_c"]
                 + self._rng.gauss(0, 0.4))
 
-        # Humidité : chute si feu, bruit
-        hum = max(3.0, w["hum"] - heat * 15 + self._rng.gauss(0, 0.8))
+        # Humidité : chute si feu, plancher en brouillard, bruit
+        hum = w["hum"] - heat * 15 - fx["temp_c"] * 0.6 + self._rng.gauss(0, 0.8)
+        if fx["hum_floor"] > hum:
+            hum = fx["hum_floor"] + self._rng.gauss(0, 1.0)
+        hum = max(3.0, min(100.0, hum))
 
-        # Fumée MQ-2 (ppm) : panache gaussien ; sensibilité croisée humidité > 85 %
+        # Fumée MQ-2 (ppm) : panache gaussien ; sensibilité croisée à la condensation
+        # (humidité > 88 %) : le capteur lit une fausse fumée sans CO
         base_smoke = 25 + smoke_exp * 1800 + self._rng.gauss(0, 4)
-        if hum > 85:
-            base_smoke *= 1.4   # MQ-2 réagit à l'humidité
+        if hum > 88:
+            base_smoke = base_smoke * 1.4 + 160 * (hum - 88) / 12
         smoke = max(0.0, base_smoke)
 
-        # CO MQ-7 (ppm)
-        co = max(0.0, 2 + smoke_exp * 290 + self._rng.gauss(0, 0.6))
+        # CO MQ-7 (ppm) : combustion + gaz d'échappement
+        co = max(0.0, 2 + smoke_exp * 290 + fx["co_ppm"] + self._rng.gauss(0, 0.6))
 
         # Flamme KY-026 (IR)
         flame = heat > 0.75
@@ -57,7 +65,9 @@ class Station(Device):
         rain = max(0.0, w.get("rain", 0.0) + self._rng.gauss(0, 0.1))
 
         return {
-            "temp": round(temp, 1),
+            # DHT22 : plage −40…80 °C, la mesure sature au-delà (les pannes, appliquées
+            # ensuite, peuvent encore produire des valeurs aberrantes)
+            "temp": round(max(-40.0, min(80.0, temp)), 1),
             "hum":  round(hum, 1),
             "smoke": round(smoke, 0),
             "co":   round(co, 1),

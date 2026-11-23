@@ -84,6 +84,20 @@ class ThermalCamera(Station):
             if t > tmax:
                 tmax = t
                 hot_bearing = b
+        # Brûlage, barbecue : vrais points chauds (c'est le serveur qui les reconnaît)
+        for lat, lon, dt in world.false_hotspots():
+            d = _dist_m(self.lat, self.lon, lat, lon)
+            if d > self.RANGE_M or d < 1.0:
+                continue
+            b = bearing_deg(self.lat, self.lon, lat, lon)
+            diff = abs(((b - self.azimuth + 540.0) % 360.0) - 180.0)
+            if diff > half or not self._visible(world, lat, lon):
+                continue
+            t = ambient + dt * math.exp(-d / 500.0)
+            hot_px += min(12.0, 6.0 * (40.0 / max(d, 40.0)) ** 2 + 0.5)
+            if t > tmax:
+                tmax = t
+                hot_bearing = b
         readings = {
             "tmax": round(min(300.0, tmax), 1),
             "hot_bearing": round(hot_bearing, 0),

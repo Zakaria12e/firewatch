@@ -60,13 +60,18 @@ def _latlon(north_m, east_m):
 
 
 def make_stations(period, world):
-    """Crée 12 stations en grille 4×3 autour du centre, enregistrées dans le monde."""
+    """
+    Crée 12 stations en grille 4×3 autour du centre, enregistrées dans le monde.
+    Disposition fixe (graine constante) : la carte de la zone (piste, hameau, parcelle)
+    est dessinée par rapport à ces positions.
+    """
+    layout = random.Random(7)
     stations = []
     k = 1
     for row in range(GRID_ROWS):
         for col in range(GRID_COLS):
-            north = (row - (GRID_ROWS - 1) / 2) * SPACING_M + random.uniform(-120, 120)
-            east  = (col - (GRID_COLS - 1) / 2) * SPACING_M + random.uniform(-120, 120)
+            north = (row - (GRID_ROWS - 1) / 2) * SPACING_M + layout.uniform(-120, 120)
+            east  = (col - (GRID_COLS - 1) / 2) * SPACING_M + layout.uniform(-120, 120)
             lat, lon = _latlon(north, east)
             sid = "N{:02d}".format(k)
             world.add_device("station", lat, lon, device_id=sid, period=period)
@@ -191,7 +196,11 @@ def handle_coap_response(device, resp):
         device.needs_inscription = True
     period = cmd.get(1)
     if period is not None and device.kind != "gateway":
-        device.period = float(period)
+        new = float(period)
+        if new < device.period:
+            # Nouvelle période plus courte (mode alerte) : appliquée dès maintenant
+            device._next_send = min(device._next_send, time.time() + new)
+        device.period = new
     siren = bool(cmd.get(2, False))
     if siren != device.siren:
         device.siren = siren

@@ -1,0 +1,84 @@
+{
+  "_doc": "Carte statique (SIG) de la zone : piste, hameau, parcelles. Connue du serveur comme d'un vrai SIG ; ce n'est pas la vérité terrain du feu. Positions [lat, lon].",
+  "roads": [
+    {
+      "id": "piste",
+      "name": "Piste forestière",
+      "points": [
+        [
+          35.123322,
+          -5.247954
+        ],
+        [
+          35.124939,
+          -5.238067
+        ],
+        [
+          35.126017,
+          -5.22928
+        ],
+        [
+          35.126646,
+          -5.221151
+        ],
+        [
+          35.126376,
+          -5.215659
+        ],
+        [
+          35.126466,
+          -5.210387
+        ],
+        [
+          35.125119,
+          -5.204015
+        ],
+        [
+          35.12422,
+          -5.196326
+        ],
+        [
+          35.122873,
+          -5.188637
+        ],
+        [
+          35.121525,
+          -5.182046
+        ]
+      ]
+    }
+  ],
+  "villages": [
+    {
+      "id": "hameau",
+      "name": "Hameau forestier",
+      "lat": 35.126152,
+      "lon": -5.228291,
+      "radius": 120
+    }
+  ],
+  "parcels": [
+    {
+      "id": "parcelle-nord",
+      "name": "Parcelle agricole nord",
+      "polygon": [
+        [
+          35.141917,
+          -5.218614
+        ],
+        [
+          35.143803,
+          -5.218504
+        ],
+        [
+          35.143893,
+          -5.215813
+        ],
+        [
+          35.141962,
+          -5.215703
+        ]
+      ]
+    }
+  ]
+}

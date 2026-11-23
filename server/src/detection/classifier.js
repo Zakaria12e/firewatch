@@ -1,93 +1,204 @@
 /**
- * Classification des fausses alertes.
+ * Classification des fausses alertes (§6.5). Module pur.
  *
- * Retourne { kind: string | null, label: string } :
- *   null    = rien à signaler, continuer la détection
- *   "véhicule"           CO sans fumée, près d'une route
- *   "brouillard"         fumée + hum > 85 %, sans CO
- *   "soleil"             temp sans fumée ni CO, de jour, capteur isolé
- *   "brûlage_autorisé"   source dans une zone de brûlage déclarée
- *   "barbecue_probable"  foyer estimé à < 200 m d'un village, intensité faible
+ * Un groupe de capteurs suspects (un foyer potentiel) est jugé en entier, à chaque
+ * évaluation : rien n'est mémorisé. Dès qu'un groupe ne colle plus à une cause
+ * bénigne (flamme qui apparaît, fumée hors de la zone déclarée, trop de capteurs…),
+ * il repasse dans la détection normale.
+ *
+ * Causes (kind) :
+ *   "brûlage_autorisé"   foyer estimé dans (ou au bord d') une zone de brûlage déclarée
+ *   "véhicule"           CO sans fumée, capteurs au bord d'une route
+ *   "brouillard"         fumée seule, humidité > 85 %, sans CO (MQ-2 trompé)
+ *   "soleil"             montée de température sans fumée ni CO, capteur isolé, de jour
+ *   "barbecue_probable"  petite source près d'un village, sans flamme (à vérifier)
  */
+import { distance, distanceToPolyline, distanceToPolygon, bearing } from "../geo.js"
 
-/** Heure du jour (UTC) considérée comme "de jour". */
-const DAY_HOURS = { start: 7, end: 19 }
+export const FALSE_ALERT_LABEL = {
+  "brûlage_autorisé": "brûlage autorisé",
+  "véhicule": "véhicule sur la route",
+  "brouillard": "brouillard",
+  "soleil": "capteur chauffé au soleil",
+  "barbecue_probable": "barbecue probable",
+}
 
-function isDay() {
-  const h = new Date().getUTCHours()
-  return h >= DAY_HOURS.start && h < DAY_HOURS.end
+/** Seuils des règles (m, %, ppm). */
+export const RULES = {
+  burnZoneToleranceM: 250,   // le foyer estimé est un barycentre de capteurs, pas la source
+  burnEscapeM: 1200,         // un suspect plus loin de la zone : le feu s'est échappé
+  burnMaxSensors: 3,
+  roadM: 300,
+  fogHum: 85,
+  fogCoPerSmoke: 0.05,        // combustion : ~0,16 ppm de CO par ppm de fumée ; brouillard : ~0
+  villageM: 350,
+  barbecueMaxSensors: 2,
+  barbecueMaxSmoke: 1200,
+  upwindDeg: 40,             // la source doit être au vent du capteur, à ± 40° du vent mesuré
+  upwindMaxM: 1500,
+  upwindMinWind: 1.5,        // m/s : sous ce vent, la direction n'est pas fiable
+  nearSourceM: 650,          // capteur assez proche pour sentir la diffusion, même au vent
 }
 
 /**
- * Classe une alerte comme fausse si les conditions sont réunies.
- *
- * @param {object} ind       – indicateurs computeIndicators()
- * @param {object} readings  – mesures brutes
- * @param {object} context   – { nearRoad, burnZones:[polygon], villages, estimatedPos, isolated }
- * @returns {{ kind: string|null, label: string }}
+ * La source candidate est-elle au vent de chacun des capteurs qui sentent la fumée ?
+ * (cohérence avec le vent, §6.6 : la fumée part sous le vent de la source)
  */
-export function classifyFalseAlert(ind, readings, context = {}) {
-  const r = readings || {}
-  const hum = r.hum ?? 50
+function upwindOfAll(nodes, target, wind) {
+  if (!wind || wind.speed < RULES.upwindMinWind || !nodes.length) return false
+  return nodes.every((n) => {
+    const d = distance(n, target)
+    if (d > RULES.upwindMaxM) return false
+    if (d <= RULES.nearSourceM) return true   // diffusion autour de la source
+    const off = Math.abs(((bearing(n, target) - wind.from + 540) % 360) - 180)
+    return off <= RULES.upwindDeg
+  })
+}
 
-  // 1. CO sans fumée, près d'une route → véhicule
-  if (ind.co && !ind.smoke && context.nearRoad) {
-    return { kind: "véhicule", label: "CO véhicule détecté (route proche, sans fumée)" }
-  }
+const centroid = (poly) => ({
+  lat: poly.reduce((s, p) => s + p[0], 0) / poly.length,
+  lon: poly.reduce((s, p) => s + p[1], 0) / poly.length,
+})
 
-  // 2. Fumée + humidité > 85 % et sans CO → brouillard (MQ-2 trompé)
-  if (ind.smoke && hum > 85 && !ind.co && !ind.flame) {
-    return { kind: "brouillard", label: "Fausse fumée – humidité > 85 % (brouillard/condensation)" }
-  }
+/** Jour local (Maroc, UTC+1) : 7 h – 19 h. Remplaçable par context.isDay (tests). */
+export function isDayNow(now = Date.now()) {
+  const h = (new Date(now).getUTCHours() + 1) % 24
+  return h >= 7 && h < 19
+}
 
-  // 3. Température sans fumée ni CO, de jour, capteur isolé → chaleur solaire
-  if (ind.tempRise && !ind.smoke && !ind.co && !ind.flame && isDay() && context.isolated) {
-    return { kind: "soleil", label: "Hausse de température sans fumée (capteur chauffé au soleil)" }
-  }
+const any = (nodes, key) => nodes.some((n) => n.indicators?.[key])
 
-  // 4. Source dans une zone de brûlage déclarée
-  if (context.burnZones?.length && context.estimatedPos) {
-    for (const zone of context.burnZones) {
-      if (pointInPolygon(context.estimatedPos, zone)) {
-        return { kind: "brûlage_autorisé", label: "Source dans zone de brûlage agricole déclarée" }
-      }
-    }
-  }
+/**
+ * Fumée de brouillard : MQ-2 à humidité > 85 %, sans flamme ni chaleur, et sans le CO
+ * qu'une vraie combustion produit avec cette fumée (le z-score du CO peut bouger sur
+ * du bruit : on compare le CO à la fumée, pas seulement l'indicateur).
+ */
+export function isFogSmoke(n) {
+  const i = n.indicators || {}
+  const r = n.readings || {}
+  if (!i.smoke || i.flame || i.hotspot || i.tempRise) return false
+  if ((r.hum ?? 0) <= RULES.fogHum) return false
+  const coExcess = Math.max(0, (r.co ?? 0) - 2)
+  const smokeExcess = Math.max(0, (r.smoke ?? 0) - 25)
+  return coExcess <= 1.5 + RULES.fogCoPerSmoke * smokeExcess
+}
 
-  // 5. Foyer estimé à < 200 m d'un village, intensité faible → barbecue
-  if (context.villages?.length && context.estimatedPos && context.confidence < 40) {
-    for (const village of context.villages) {
-      const d = distM(context.estimatedPos.lat, context.estimatedPos.lon, village.lat, village.lon)
-      if (d < 200) {
+/**
+ * @param {object[]} cluster  suspects d'un même foyer : [{id, lat, lon, readings, indicators}]
+ * @param {object}   ctx      { estimatedPos, burnZones:[{name?, polygon}|polygon], roads:[{points}],
+ *                              villages:[{name, lat, lon}], isDay }
+ * @returns {{kind, label, reason, nodes}|null}
+ */
+export function classifyCluster(cluster, ctx = {}) {
+  if (!cluster?.length) return null
+  const nodes = cluster.map((n) => n.id)
+  const flame = any(cluster, "flame")
+  const hot = any(cluster, "hotspot")
+  const smoke = any(cluster, "smoke")
+  const co = any(cluster, "co")
+  const pos = ctx.estimatedPos
+
+  // 1. Brûlage déclaré : foyer estimé dans la zone, ou zone au vent de chaque capteur
+  //    qui sent la fumée ; le groupe doit rester local (sinon le feu s'est échappé)
+  const smokers = cluster.filter((n) => n.indicators?.smoke || n.indicators?.co)
+  if ((pos || smokers.length) && ctx.burnZones?.length) {
+    for (const z of ctx.burnZones) {
+      const poly = Array.isArray(z) ? z : z.polygon
+      if (!Array.isArray(poly) || poly.length < 3) continue
+      const d = pos ? distanceToPolygon(pos, poly) : Infinity
+      const contained = cluster.length <= RULES.burnMaxSensors &&
+        cluster.every((n) => distanceToPolygon(n, poly) <= RULES.burnEscapeM)
+      if (!contained) continue
+      const name = Array.isArray(z) ? "zone déclarée" : z.name ?? "zone déclarée"
+      if (d <= RULES.burnZoneToleranceM) {
         return {
-          kind: "barbecue_probable",
-          label: `Foyer à ${Math.round(d)} m de ${village.name} – barbecue probable (à vérifier)`,
+          kind: "brûlage_autorisé",
+          label: `Brûlage dans « ${name} »`,
+          reason: d === 0 ? "foyer estimé dans la zone de brûlage déclarée" : `foyer estimé à ${Math.round(d)} m de la zone de brûlage déclarée`,
+          nodes,
+        }
+      }
+      if (smokers.length && upwindOfAll(smokers, centroid(poly), ctx.wind)) {
+        return {
+          kind: "brûlage_autorisé",
+          label: `Brûlage dans « ${name} »`,
+          reason: `zone déclarée au vent de ${smokers.map((n) => n.id).join(", ")} (vent du ${Math.round(ctx.wind.from)}°)`,
+          nodes,
         }
       }
     }
   }
 
-  return { kind: null, label: "" }
-}
-
-// ---------------------------------------------------------------------------
-// Utilitaires géo
-// ---------------------------------------------------------------------------
-function distM(lat1, lon1, lat2, lon2) {
-  const dlat = (lat2 - lat1) * 111_320
-  const dlon = (lon2 - lon1) * 111_320 * Math.cos(((lat1 + lat2) / 2) * (Math.PI / 180))
-  return Math.hypot(dlat, dlon)
-}
-
-function pointInPolygon(pt, poly) {
-  let inside = false
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const [xi, yi] = poly[i]
-    const [xj, yj] = poly[j]
-    const intersect =
-      yi > pt.lon !== yj > pt.lon &&
-      pt.lat < ((xj - xi) * (pt.lon - yi)) / (yj - yi) + xi
-    if (intersect) inside = !inside
+  // 2. Véhicule : CO sans fumée ni chaleur, capteurs au bord d'une route
+  if (co && !smoke && !flame && !hot && ctx.roads?.length) {
+    const coNodes = cluster.filter((n) => n.indicators?.co)
+    const near = coNodes.every((n) => ctx.roads.some((r) => distanceToPolyline(n, r.points) <= RULES.roadM))
+    if (near) {
+      const d = Math.min(...coNodes.map((n) => Math.min(...ctx.roads.map((r) => distanceToPolyline(n, r.points)))))
+      return {
+        kind: "véhicule",
+        label: "CO sans fumée au bord de la piste",
+        reason: `CO sur ${coNodes.map((n) => n.id).join(", ")} à ${Math.round(d)} m de la route, aucune fumée`,
+        nodes,
+      }
+    }
   }
-  return inside
+
+  // 3. Brouillard : fumée seule par humidité > 85 %, sans le CO d'une combustion
+  if (smoke && !flame && !hot && !any(cluster, "tempRise")) {
+    const smokers = cluster.filter((n) => n.indicators?.smoke)
+    const others = cluster.filter((n) => !n.indicators?.smoke)
+    if (smokers.every(isFogSmoke) && !others.some((n) => n.indicators?.co)) {
+      const hum = Math.round(Math.min(...smokers.map((n) => n.readings.hum)))
+      return {
+        kind: "brouillard",
+        label: "Fausse fumée par brouillard",
+        reason: `MQ-2 à ≥ ${hum} % d'humidité, sans CO ni hausse de température`,
+        nodes,
+      }
+    }
+  }
+
+  // 4. Soleil : un capteur isolé qui chauffe, sans fumée ni CO, de jour
+  const day = ctx.isDay ?? isDayNow()
+  if (cluster.length === 1 && any(cluster, "tempRise") && !smoke && !co && !flame && !hot && day) {
+    return {
+      kind: "soleil",
+      label: "Capteur chauffé au soleil",
+      reason: `${nodes[0]} seul en hausse de température, sans fumée ni CO, de jour`,
+      nodes,
+    }
+  }
+
+  // 5. Barbecue : petite fumée près d'un village (ou village au vent des capteurs), sans
+  //    flamme, peu de capteurs (à vérifier sur place)
+  if (smoke && pos && ctx.villages?.length && !flame && cluster.length <= RULES.barbecueMaxSensors) {
+    const maxSmoke = Math.max(0, ...cluster.map((n) => n.readings?.smoke ?? 0))
+    const smokeNodes = cluster.filter((n) => n.indicators?.smoke)
+    for (const v of ctx.villages) {
+      const d = distance(pos, v)
+      const near = d <= RULES.villageM || (d <= RULES.upwindMaxM / 2 && upwindOfAll(smokeNodes, v, ctx.wind))
+      if (near && maxSmoke < RULES.barbecueMaxSmoke) {
+        return {
+          kind: "barbecue_probable",
+          label: `Barbecue probable à ${v.name}`,
+          reason: `foyer estimé à ${Math.round(d)} m de ${v.name}, faible intensité (${Math.round(maxSmoke)} ppm), sans flamme : à vérifier`,
+          nodes,
+        }
+      }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Version « un seul capteur » (compatibilité) : indicateurs + mesures d'un nœud.
+ * context = { nearRoad, burnZones, estimatedPos, villages, isolated, isDay, confidence }
+ */
+export function classifyFalseAlert(ind, readings, context = {}) {
+  const node = { id: "?", lat: context.estimatedPos?.lat ?? 0, lon: context.estimatedPos?.lon ?? 0, indicators: ind, readings }
+  const roads = context.nearRoad ? [{ points: [[node.lat, node.lon], [node.lat, node.lon + 1e-6]] }] : []
+  const res = classifyCluster([node], { ...context, roads, isDay: context.isDay ?? true })
+  return res ? { kind: res.kind, label: res.label } : { kind: null, label: "" }
 }

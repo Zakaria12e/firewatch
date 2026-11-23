@@ -22,6 +22,7 @@ const state = {
   packetsReceived: 0,
   lora: newLora(),
   falseAlertsAvoided: 0,
+  falseAlertsByKind: {},   // cause → nombre d'épisodes
   detectionEvents: [],     // [{fireStartMs, suspicionMs, confirmationMs}]
   _currentFire: null,      // {startMs, suspicionMs}
   scenarios: [],           // résultats banc d'essai (ajoutés par --bench)
@@ -114,9 +115,10 @@ export function recordFireReset() {
   state._currentFire = null
 }
 
-/** Incrémente le compteur de fausses alertes évitées. */
-export function recordFalseAlertAvoided() {
+/** Un épisode de fausse alerte évitée (cause : véhicule, brouillard…). */
+export function recordFalseAlertAvoided(kind = "autre") {
   state.falseAlertsAvoided++
+  state.falseAlertsByKind[kind] = (state.falseAlertsByKind[kind] || 0) + 1
 }
 
 /** Ajoute un résultat de banc d'essai. */
@@ -129,6 +131,7 @@ export function resetMetrics() {
   state.packetsReceived = 0
   state.lora = newLora()
   state.falseAlertsAvoided = 0
+  state.falseAlertsByKind = {}
   state.detectionEvents = []
   state._currentFire = null
   seqById.clear()
@@ -174,6 +177,7 @@ export function getMetrics(nodes) {
     },
     falseAlerts: {
       avoided: state.falseAlertsAvoided,
+      byKind: { ...state.falseAlertsByKind },
     },
     network: {
       packetsReceived: state.packetsReceived,

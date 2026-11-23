@@ -37,7 +37,7 @@ const setWeatherMode = (mode: string, preset?: string) =>
   })
 
 export default function App() {
-  const { state, world, alertLevel, metrics, sendCommand } = useFireWatch()
+  const { state, world, alertLevel, metrics, events, sendCommand } = useFireWatch()
   const [page, setPage] = useState<Page>("ops")
   const [focus, setFocus] = useState<{ lat: number; lon: number; key: number } | null>(null)
 
@@ -59,6 +59,7 @@ export default function App() {
     <div className="fixed inset-0 bg-black overflow-hidden">
       {/* Carte en fond plein écran */}
       <FireMap
+        events={events}
         state={state}
         world={world}
         alertLevel={alertLevel}
@@ -87,6 +88,7 @@ export default function App() {
           <IncidentPanel
             incident={state.incident}
             alertLevel={alertLevel}
+            events={events}
             sendCommand={sendCommand}
           />
         </>

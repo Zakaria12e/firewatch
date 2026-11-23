@@ -37,6 +37,24 @@ const SCENARIOS = [
     desc: "Feu démarre, pluie arrive et l'éteint – incident maîtrisé.",
     color: "border-white/10 hover:border-[#FF5A1F]",
   },
+  {
+    name: "brulage",
+    label: "Brûlage déclaré",
+    desc: "Brûlage agricole sur la parcelle nord, zone déclarée – aucune alerte.",
+    color: "border-white/10 hover:border-[#FF5A1F]",
+  },
+  {
+    name: "route",
+    label: "Véhicule sur la piste",
+    desc: "CO d'un moteur au ralenti, sans fumée – fausse alerte évitée.",
+    color: "border-white/10 hover:border-[#FF5A1F]",
+  },
+  {
+    name: "brouillard",
+    label: "Brouillard",
+    desc: "Humidité > 85 %, MQ-2 trompés, sans CO – fausse alerte évitée.",
+    color: "border-white/10 hover:border-[#FF5A1F]",
+  },
 ]
 
 interface Props {

@@ -12,11 +12,34 @@ from .forest import (Forest, latlon_to_cell, cell_to_latlon, ROWS, COLS, CELL_M,
                      ORIGIN_LAT, ORIGIN_LON)
 from .fire import FireModel
 from .weather import PRESETS, default_weather
+from . import gis
 
 # Canadair : délai (secondes réelles) entre l'ordre et l'impact de l'eau, le temps
 # que l'avion arrive sur zone (le dashboard anime l'approche à partir de impactIn).
 DROP_DELAY_S = 6.0
 DROP_KEEP_S = 8.0     # durée pendant laquelle un largage reste dans le snapshot
+
+# Diffusion de la fumée autour de la source (toutes directions) : poids par cellule en
+# feu, majoré par vent faible, décroissance sur DIFFUSION_M mètres
+DIFFUSION_BASE = 0.12
+DIFFUSION_CALM = 0.16
+DIFFUSION_M = 250.0
+
+# Sources de fausses alertes (§5.3) : durée (s réelles), montée en puissance (s),
+# et effet physique sur les capteurs. Elles ne passent jamais par le serveur autrement
+# que par les mesures des capteurs.
+#   smoke/heat : poids du panache équivalent (1 = une cellule en feu)
+#   co_ppm     : CO local (moteur au ralenti), décroissance sur co_scale m
+#   hum/radius : humidité plancher dans un rayon (brouillard)
+#   temp_c     : échauffement d'un capteur (soleil direct sur le boîtier)
+#   thermal_c  : température vue par une caméra thermique
+FALSE_SOURCES = {
+    "brulage":    {"duration": 180.0, "ramp": 15.0, "smoke": 1.6, "heat": 0.35, "thermal_c": 220.0},
+    "barbecue":   {"duration": 150.0, "ramp": 10.0, "smoke": 0.3, "heat": 0.1, "thermal_c": 140.0},
+    "vehicule":   {"duration": 120.0, "ramp": 5.0, "co_ppm": 160.0, "co_scale": 90.0},
+    "brouillard": {"duration": 180.0, "ramp": 25.0, "hum": 94.0, "radius": 900.0},
+    "soleil":     {"duration": 120.0, "ramp": 40.0, "temp_c": 18.0, "radius": 60.0},
+}
 
 
 class World:
@@ -47,6 +70,8 @@ class World:
         self._device_id_counter = 0
         self._drop_counter = 0
         self._scheduled_commands = []   # [(sim_time_trigger, cmd)]
+        self.false_sources = []         # [{id, kind, lat, lon, start, until}]
+        self._false_counter = 0
 
     # ------------------------------------------------------------------
     # Géométrie
@@ -89,6 +114,7 @@ class World:
                 self.fire.extinguish(r, c, d["radius"])
                 d["done"] = True
         self.drops = [d for d in self.drops if now - d["impact_at"] < DROP_KEEP_S]
+        self.false_sources = [f for f in self.false_sources if now < f["until"]]
 
     # ------------------------------------------------------------------
     # Ordres
@@ -156,12 +182,18 @@ class World:
             dev = self.devices.get(cmd.get("id"))
             if dev:
                 dev.set_fault(cmd.get("mode", "ok"))
+        elif t == "false_source":
+            self.add_false_source(cmd.get("kind", ""), cmd.get("lat"), cmd.get("lon"),
+                                  cmd.get("duration"))
+        elif t == "false_source_clear":
+            self.false_sources = []
         elif t == "time_scale":
             self.time_scale = max(1, int(cmd.get("x", 15)))
         elif t == "reset":
             self.fire.reset()
             self.weather = default_weather()
             self.drops = []
+            self.false_sources = []
             self._scheduled_commands.clear()
         elif t == "scenario":
             self._run_scenario(cmd.get("name", "chergui"))
@@ -188,6 +220,106 @@ class World:
                     if len(cells) >= max_cells:
                         return cells
         return cells
+
+    # ------------------------------------------------------------------
+    # Fausses sources
+    # ------------------------------------------------------------------
+    def add_false_source(self, kind, lat=None, lon=None, duration=None):
+        """
+        Ajoute une source de fausse alerte. Le véhicule se place sur la piste la plus
+        proche ; le soleil chauffe l'appareil le plus proche (dans 400 m). Retourne l'id.
+        """
+        spec = FALSE_SOURCES.get(kind)
+        if spec is None:
+            return None
+        if lat is None or lon is None:
+            lat, lon = self._default_false_position(kind)
+        lat, lon = float(lat), float(lon)
+        if kind == "vehicule":
+            q = gis.nearest_road_point(lat, lon)
+            if q is not None:
+                lat, lon = q[0], q[1]
+        elif kind == "soleil":
+            best = None
+            for d in self.devices.values():
+                if d.kind == "gateway":
+                    continue
+                dist = _dist_m(lat, lon, d.lat, d.lon)
+                if dist < 400 and (best is None or dist < best[0]):
+                    best = (dist, d.lat, d.lon)
+            if best is not None:
+                lat, lon = best[1], best[2]
+        now = time.time()
+        self._false_counter += 1
+        self.false_sources.append({
+            "id": self._false_counter, "kind": kind, "lat": lat, "lon": lon, "start": now,
+            "until": now + float(duration or spec["duration"]),
+        })
+        return self._false_counter
+
+    def _default_false_position(self, kind):
+        """Position par défaut des scénarios : près d'un capteur réel, sur la carte de la zone."""
+        if kind == "barbecue" and gis.VILLAGES:
+            v = gis.VILLAGES[0]
+            return v["lat"], v["lon"]
+        if kind == "brulage" and gis.PARCELS:
+            return gis.parcel_center(gis.PARCELS[0])
+        if kind == "vehicule":
+            # point de la piste le plus proche d'une station
+            best = None
+            for d in self.devices.values():
+                if d.kind != "station":
+                    continue
+                q = gis.nearest_road_point(d.lat, d.lon)
+                if q is not None and (best is None or q[2] < best[2]):
+                    best = q
+            if best is not None:
+                return best[0], best[1]
+        return 35.135, -5.215
+
+    def false_exposure(self, lat, lon):
+        """
+        Effet des fausses sources sur un capteur en (lat, lon) :
+        {heat, smoke (0-1, comme fire_exposure), co_ppm, hum_floor, temp_c}.
+        """
+        out = {"heat": 0.0, "smoke": 0.0, "co_ppm": 0.0, "hum_floor": 0.0, "temp_c": 0.0}
+        if not self.false_sources:
+            return out
+        now = time.time()
+        wind_to_n, wind_to_e = self._wind_to()
+        ws = self.weather.get("wind_speed", 5.0)
+        for f in self.false_sources:
+            spec = FALSE_SOURCES[f["kind"]]
+            ramp = max(0.0, min(1.0, (now - f["start"]) / spec["ramp"]))
+            if "smoke" in spec:
+                h, sm = self._plume(lat, lon, f["lat"], f["lon"], wind_to_n, wind_to_e, ws)
+                out["heat"] += h * spec["heat"] * ramp
+                out["smoke"] += sm * spec["smoke"] * ramp
+            if "co_ppm" in spec:
+                d = _dist_m(lat, lon, f["lat"], f["lon"])
+                out["co_ppm"] += spec["co_ppm"] * math.exp(-d / spec["co_scale"]) * ramp
+            if "hum" in spec:
+                d = _dist_m(lat, lon, f["lat"], f["lon"])
+                if d < spec["radius"]:
+                    floor = spec["hum"] - 6.0 * d / spec["radius"]
+                    out["hum_floor"] = max(out["hum_floor"], floor * ramp)
+            if "temp_c" in spec:
+                if _dist_m(lat, lon, f["lat"], f["lon"]) < spec["radius"]:
+                    out["temp_c"] += spec["temp_c"] * ramp
+        out["heat"] = min(1.0, out["heat"])
+        out["smoke"] = min(1.0, out["smoke"])
+        return out
+
+    def false_hotspots(self):
+        """Sources chaudes visibles par une caméra thermique : [(lat, lon, °C au-dessus de l'ambiante)]."""
+        now = time.time()
+        out = []
+        for f in self.false_sources:
+            spec = FALSE_SOURCES[f["kind"]]
+            if "thermal_c" in spec:
+                ramp = max(0.0, min(1.0, (now - f["start"]) / spec["ramp"]))
+                out.append((f["lat"], f["lon"], spec["thermal_c"] * ramp))
+        return out
 
     def _schedule_drop(self, lat, lon, radius):
         """Canadair : l'eau touche le sol DROP_DELAY_S secondes après l'ordre."""
@@ -241,13 +373,18 @@ class World:
             self.apply_command({"type": "preset", "name": "chergui"})
             self._ignite_near(35.135, -5.175)
         elif name == "au-vent":
-            # Feu à l'ouest des capteurs, vent d'est → fumée s'éloigne
+            # Feu à ~1 km à l'ouest des capteurs, vent d'est → la fumée s'éloigne :
+            # détection plus lente (diffusion, chaleur, puis capteurs atteints)
             self.apply_command({"type": "preset", "name": "chergui"})
-            self._ignite_near(35.135, -5.258)
+            self._ignite_near(35.131, -5.2415)
         elif name == "nuit":
-            # Feu de nuit, faible vent
+            # Feu de nuit d'été (sec, vent faible) : départ de 100 m au centre ; il progresse
+            # lentement et la fumée diffuse autour (peu de panache sous un vent faible)
             self.apply_command({"type": "preset", "name": "nuit"})
-            self._ignite_near(35.135, -5.215)
+            self.apply_command({"type": "weather", "hum": 38.0, "fmc": 10.0})
+            r, c = latlon_to_cell(35.135, -5.215)
+            if self.fire.ignite_cells(self.fire.disk_cells(r, c, 100.0)) is None:
+                self._ignite_near(35.135, -5.215)
         elif name == "deux-foyers":
             # Deux foyers simultanés (sautes de feu)
             self.apply_command({"type": "preset", "name": "chergui"})
@@ -267,6 +404,21 @@ class World:
             self._scheduled_commands.append(
                 (self.sim_time + 400, {"type": "preset", "name": "pluie"})
             )
+        elif name == "route":
+            # CO d'un véhicule à l'arrêt sur la piste, sans fumée → fausse alerte évitée
+            self.apply_command({"type": "preset", "name": "chergui"})
+            self.add_false_source("vehicule")
+        elif name == "brouillard":
+            # Brouillard sur le sud-ouest : humidité > 85 %, MQ-2 trompés, pas de CO
+            self.apply_command({"type": "preset", "name": "normal"})
+            self.add_false_source("brouillard", 35.1278, -5.2245)
+        elif name == "brulage":
+            # Brûlage agricole sur la parcelle déclarée (le serveur déclare la zone)
+            self.apply_command({"type": "preset", "name": "chergui"})
+            self.add_false_source("brulage")
+        elif name == "barbecue":
+            self.apply_command({"type": "preset", "name": "chergui"})
+            self.add_false_source("barbecue")
         elif name == "pluie_seule":
             self.apply_command({"type": "preset", "name": "pluie"})
         elif name == "reset":
@@ -275,54 +427,57 @@ class World:
     # ------------------------------------------------------------------
     # Exposition au feu pour les capteurs
     # ------------------------------------------------------------------
+    def _wind_to(self):
+        """Vecteur unitaire (nord, est) vers lequel souffle le vent."""
+        wind_from = math.radians(self.weather.get("wind_dir", 0.0))
+        return -math.cos(wind_from), -math.sin(wind_from)
+
+    @staticmethod
+    def _plume(lat, lon, clat, clon, wind_to_n, wind_to_e, wind_speed=5.0):
+        """
+        Contribution d'une source ponctuelle en (clat, clon) au capteur (lat, lon) :
+        (chaleur, fumée) non normalisées, même modèle que pour une cellule en feu.
+        Fumée = panache gaussien sous le vent + faible diffusion autour de la source
+        (turbulence, tourbillons de pente), plus marquée quand le vent est faible :
+        un capteur au vent sent un peu la fumée d'un feu proche, jamais celle d'un feu lointain.
+        """
+        dlat_m = (lat - clat) * 111_320
+        dlon_m = (lon - clon) * 111_320 * math.cos(math.radians(35.135))
+        dist = max(1.0, math.hypot(dlat_m, dlon_m))
+        heat = math.exp(-dist / 150.0) if dist < 500.0 else 0.0
+        smoke = 0.0
+        if dist < 3000.0:
+            sensor_n = dlat_m / dist
+            sensor_e = dlon_m / dist
+            along = sensor_n * wind_to_n + sensor_e * wind_to_e   # cosinus (-1 … 1)
+            if along * dist > -50.0:   # capteur sous le vent (ou à moins de 50 m au vent)
+                cross_n = sensor_n - along * wind_to_n
+                cross_e = sensor_e - along * wind_to_e
+                cross = math.hypot(cross_n * dist, cross_e * dist)
+                sigma = 100.0 + 0.3 * max(0.0, along * dist)  # panache qui s'élargit
+                smoke = math.exp(-cross ** 2 / (2 * sigma ** 2)) * math.exp(-dist / 1800.0)
+            w_diff = DIFFUSION_BASE + DIFFUSION_CALM * max(0.0, 1.0 - wind_speed / 4.0)
+            smoke += w_diff * math.exp(-dist / DIFFUSION_M)
+        return heat, smoke
+
     def fire_exposure(self, lat, lon):
         """
         Retourne (heat, smoke) ∈ [0,1] pour un capteur à (lat, lon).
         heat  : chaleur (cellules en feu proches)
         smoke : exposition au panache (cellules en feu sous le vent)
         """
-        wind_from  = math.radians(self.weather.get("wind_dir", 0.0))
-        # Vecteur vers lequel souffle le vent
-        wind_to_n = -math.cos(wind_from)
-        wind_to_e = -math.sin(wind_from)
-
+        wind_to_n, wind_to_e = self._wind_to()
+        ws = self.weather.get("wind_speed", 5.0)
         burning = self.fire.burning_cells()
         if not burning:
             return 0.0, 0.0
-
-        center_lat = 35.135
-
         heat_sum = 0.0
         smoke_sum = 0.0
-        HEAT_RANGE = 500.0    # m : chaleur significative dans ce rayon
-        SMOKE_RANGE = 3000.0  # m : panache peut aller loin
-
         for (r, c) in burning:
             clat, clon = cell_to_latlon(r, c)
-            dlat_m = (lat - clat) * 111_320
-            dlon_m = (lon - clon) * 111_320 * math.cos(math.radians(center_lat))
-            dist = math.hypot(dlat_m, dlon_m)
-            if dist < 1.0:
-                dist = 1.0
-
-            # Chaleur : décroissance exponentielle
-            if dist < HEAT_RANGE:
-                heat_sum += math.exp(-dist / 150.0)
-
-            # Fumée : panache gaussien sous le vent
-            if dist < SMOKE_RANGE:
-                # Composante dans la direction du vent
-                sensor_n = dlat_m / dist
-                sensor_e = dlon_m / dist
-                along = sensor_n * wind_to_n + sensor_e * wind_to_e
-                if along > -50:   # capteur dans la demi-sphère sous le vent
-                    cross_n = sensor_n - along * wind_to_n
-                    cross_e = sensor_e - along * wind_to_e
-                    cross = math.hypot(cross_n * dist, cross_e * dist)
-                    sigma = 100.0 + 0.3 * max(0.0, along * dist)  # plume qui s'élargit
-                    gauss = math.exp(-cross ** 2 / (2 * sigma ** 2))
-                    decay = math.exp(-dist / 1800.0)
-                    smoke_sum += gauss * decay
+            h, sm = self._plume(lat, lon, clat, clon, wind_to_n, wind_to_e, ws)
+            heat_sum += h
+            smoke_sum += sm
 
         heat  = min(1.0, heat_sum)
         smoke = min(1.0, smoke_sum)
@@ -358,9 +513,22 @@ class World:
             ],
             "weather": dict(self.weather),
             "devices": [d.to_dict() for d in self.devices.values()],
+            # Vérité terrain : affichage optionnel et métriques, jamais la détection
+            "falseSources": [
+                {"id": f["id"], "kind": f["kind"], "lat": round(f["lat"], 6),
+                 "lon": round(f["lon"], 6), "remaining": round(f["until"] - now, 1),
+                 "radius": FALSE_SOURCES[f["kind"]].get("radius", 0.0)}
+                for f in self.false_sources
+            ],
             "radio": {k: (round(v, 1) if isinstance(v, float) else v)
                       for k, v in self.radio_stats.items()},
             "timeScale": self.time_scale,
             "speed": self.speed,
             "simTime": round(self.sim_time, 1),
         }
+
+
+def _dist_m(lat1, lon1, lat2, lon2):
+    dn = (lat2 - lat1) * 111_320
+    de = (lon2 - lon1) * 111_320 * math.cos(math.radians((lat1 + lat2) / 2))
+    return math.hypot(dn, de)

@@ -170,8 +170,44 @@ export interface ThreatenedPlace {
 }
 
 export interface TimelineEvent {
-  type: AlertLevel
+  /** niveau d'alerte, ou « fausse_alerte » */
+  type: AlertLevel | "fausse_alerte"
   at: number
+  label?: string
+  reason?: string
+}
+
+/** Événement du journal (serveur, socket « event », GET /api/events). */
+export interface FwEvent {
+  id: number
+  type: "niveau" | "fausse_alerte" | "santé" | "zone" | "reset"
+  at: number
+  level?: AlertLevel
+  kind?: string
+  label: string
+  reason?: string
+  detail?: string
+  nodes?: string[]
+  position?: { lat: number; lon: number } | null
+}
+
+export type FalseSourceKind = "brulage" | "barbecue" | "vehicule" | "brouillard" | "soleil"
+
+/** Fausse source active du monde simulé (vérité terrain : affichage seulement). */
+export interface WorldFalseSource {
+  id: number
+  kind: FalseSourceKind
+  lat: number
+  lon: number
+  remaining: number
+  radius: number
+}
+
+/** Carte statique de la zone (GET /api/gis). */
+export interface Terrain {
+  roads: { id: string; name: string; points: [number, number][] }[]
+  villages: { id: string; name: string; lat: number; lon: number; radius: number }[]
+  parcels: { id: string; name: string; polygon: [number, number][] }[]
 }
 
 export interface Incident {
@@ -281,6 +317,8 @@ export interface WorldState {
   spots?: { id: number; from: [number, number]; to: [number, number]; fire?: string }[]
   /** largages Canadair : impactIn = secondes avant l'impact (négatif = passé) */
   drops?: { id: number; lat: number; lon: number; radius: number; impactIn: number }[]
+  /** fausses sources actives (vérité terrain) */
+  falseSources?: WorldFalseSource[]
   weather?: WorldWeather
   devices?: WorldDevice[]
   radio?: { sent: number; lost: number }
@@ -332,7 +370,7 @@ export interface Metrics {
     avgSuspS: number | null
     count: number
   }
-  falseAlerts: { avoided: number }
+  falseAlerts: { avoided: number; byKind: Record<string, number> }
   network: {
     packetsReceived: number
     pdr: number

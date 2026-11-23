@@ -2,7 +2,7 @@ import { useRef, useCallback, useMemo, useEffect, useState } from "react"
 import ReactMap, { Marker, Source, Layer, type MapRef } from "react-map-gl/maplibre"
 import type { Map as MapLibreMap, MapLayerMouseEvent, MapMouseEvent, Marker as MarkerInstance } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
-import type { FireWatchState, WorldState, AlertLevelPayload, FireNode, WorldDevice } from "@/types"
+import type { FireWatchState, WorldState, AlertLevelPayload, FireNode, WorldDevice, FwEvent } from "@/types"
 import type { Feature, FeatureCollection, Polygon } from "geojson"
 import { Mountain, Eye, EyeOff, X, Battery, Signal, Plus, Minus, Navigation } from "lucide-react"
 import { C, alpha, healthColor, healthLabel, kindMeta } from "@/lib/palette"
@@ -12,6 +12,8 @@ import { GroundOverlay, GROUND_LAYER } from "@/map3d/groundOverlay"
 import { useEffectsQuality, useReducedMotion, useShowFps } from "@/map3d/quality"
 import { GATEWAY_RANGE_M } from "@/map3d/fx/devices"
 import { fireTool } from "@/lib/fireTool"
+import { FALSE_DRAG_PREFIX, FALSE_SOURCES } from "@/lib/falseSources"
+import type { FalseSourceKind, Terrain } from "@/types"
 import { IgnitionMarker, MapContextMenu } from "./FireIgnition"
 import {
   ignitionGeoJSON, movePending, simplifyLine, lineLengthM, fireNear, fireNearScreen,
@@ -353,9 +355,39 @@ interface Props {
   active?: boolean
   /** « Voir sur la carte » : vol vers un appareil (key change à chaque demande) */
   focus?: { lat: number; lon: number; key: number } | null
+  /** journal : relire les zones de brûlage quand une zone est déclarée ou retirée */
+  events?: FwEvent[]
 }
 
-export function FireMap({ state, world, alertLevel, sendCommand, active = true, focus = null }: Props) {
+interface BurnZone { id: string; name: string; polygon: [number, number][]; auto?: boolean }
+
+/** Piste, hameau, parcelles et zones de brûlage déclarées pour la source GeoJSON. */
+function terrainGeoJSON(t: Terrain | null, zones: BurnZone[]): FeatureCollection {
+  const features: Feature[] = []
+  const ring = (poly: [number, number][]) => [...poly.map(([la, lo]) => [lo, la]), [poly[0][1], poly[0][0]]]
+  for (const r of t?.roads ?? []) {
+    features.push({ type: "Feature", properties: { part: "road", name: r.name }, geometry: { type: "LineString", coordinates: r.points.map(([la, lo]) => [lo, la]) } })
+  }
+  for (const p of t?.parcels ?? []) {
+    features.push({ type: "Feature", properties: { part: "parcel", name: p.name }, geometry: { type: "Polygon", coordinates: [ring(p.polygon)] } })
+  }
+  for (const v of t?.villages ?? []) {
+    const k = Math.cos((v.lat * Math.PI) / 180)
+    const pts: [number, number][] = Array.from({ length: 25 }, (_, i) => {
+      const a = (i / 24) * 2 * Math.PI
+      return [v.lat + (v.radius * Math.cos(a)) / 111_320, v.lon + (v.radius * Math.sin(a)) / (111_320 * k)]
+    })
+    features.push({ type: "Feature", properties: { part: "village", name: v.name }, geometry: { type: "Polygon", coordinates: [ring(pts)] } })
+  }
+  for (const z of zones) {
+    if (Array.isArray(z.polygon) && z.polygon.length >= 3) {
+      features.push({ type: "Feature", properties: { part: "burn", name: z.name }, geometry: { type: "Polygon", coordinates: [ring(z.polygon)] } })
+    }
+  }
+  return { type: "FeatureCollection", features }
+}
+
+export function FireMap({ state, world, alertLevel, sendCommand, active = true, focus = null, events }: Props) {
   const mapRef        = useRef<MapRef>(null)
   const containerRef  = useRef<HTMLDivElement>(null)
   const is3DRef       = useRef(true)
@@ -401,6 +433,20 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
   const [drag, setDrag] = useState<{ id: string; lon: number; lat: number } | null>(null)
 
   const prevConfirmedRef = useRef(false)
+
+  // Carte statique de la zone (piste, hameau, parcelles) et zones de brûlage déclarées
+  const [terrain, setTerrain] = useState<Terrain | null>(null)
+  const [burnZones, setBurnZones] = useState<BurnZone[]>([])
+  const refreshZones = useCallback(() => {
+    fetch("/api/settings").then((r) => r.json()).then((s) => setBurnZones(s.burnZones ?? [])).catch(() => {})
+  }, [])
+  useEffect(() => {
+    fetch("/api/gis").then((r) => r.json()).then(setTerrain).catch(() => {})
+    refreshZones()
+  }, [refreshZones])
+  // Une zone déclarée ou retirée (scénario, réinitialisation) : relire les paramètres
+  const lastZoneEvent = events?.filter((e) => e.type === "zone" || e.type === "reset").at(-1)?.id
+  useEffect(() => { if (lastZoneEvent) refreshZones() }, [lastZoneEvent, refreshZones])
 
   // Départ de feu en attente (compte à rebours), tracé Maj + glisser, menu contextuel
   const [pending, setPending] = useState<PendingFire | null>(null)
@@ -712,12 +758,16 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
       // Point de départ en attente : 3 s pour le déplacer ou l'annuler
       const r = Number(e.dataTransfer.getData("radius"))
       startPoint(lngLat.lat, lngLat.lng, Number.isFinite(r) ? r : fireTool.radius)
+    } else if (kind.startsWith(FALSE_DRAG_PREFIX)) {
+      // Fausse source : agit sur le monde simulé, les capteurs la mesurent
+      sendCommand("false_source", { kind: kind.slice(FALSE_DRAG_PREFIX.length), lat: lngLat.lat, lon: lngLat.lng })
+      if (kind.endsWith("brulage")) window.setTimeout(refreshZones, 800)
     } else if (kind === "__water__") {
       sendCommand("water", { lat: lngLat.lat, lon: lngLat.lng, radius: 150 })
     } else {
       sendCommand("device_add", { kind, lat: lngLat.lat, lon: lngLat.lng })
     }
-  }, [sendCommand, startPoint])
+  }, [sendCommand, startPoint, refreshZones])
 
   const handleDblClick = useCallback((e: MapLayerMouseEvent) => {
     startPoint(e.lngLat.lat, e.lngLat.lng)
@@ -737,6 +787,7 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
   }, [])
 
   const ignitionGJ = useMemo(() => ignitionGeoJSON(pending, draft), [pending, draft])
+  const terrainGJ = useMemo(() => terrainGeoJSON(terrain, burnZones), [terrain, burnZones])
 
   const orphanNodes  = state.nodes.filter((n) => !worldDevices.find((d) => d.id === n.id))
   const incident     = state.incident
@@ -768,8 +819,53 @@ export function FireMap({ state, world, alertLevel, sendCommand, active = true, 
         onContextMenu={handleContextMenu}
         onMoveStart={(e) => { if (e.originalEvent) setMenu(null) }}
         boxZoom={false}
+        attributionControl={{ compact: true }}
         doubleClickZoom={false}
       >
+        {/* ── Carte de la zone : piste, hameau, parcelles, zones de brûlage déclarées ── */}
+        <Source id="terrain" type="geojson" data={terrainGJ}>
+          <Layer id="burnzones-fill" type="fill" filter={["==", ["get", "part"], "burn"]}
+            paint={{ "fill-color": "#6B2510", "fill-opacity": 0.32 }} />
+          <Layer id="parcels-outline" type="line" filter={["in", ["get", "part"], ["literal", ["parcel", "burn"]]]}
+            paint={{ "line-color": ["case", ["==", ["get", "part"], "burn"], "#FF5A1F", "rgba(255,255,255,0.45)"], "line-width": 1.2, "line-dasharray": [2, 2] }} />
+          <Layer id="roads-casing" type="line" filter={["==", ["get", "part"], "road"]}
+            layout={{ "line-cap": "round", "line-join": "round" }}
+            paint={{ "line-color": "rgba(0,0,0,0.55)", "line-width": 4.5 }} />
+          <Layer id="roads-line" type="line" filter={["==", ["get", "part"], "road"]}
+            layout={{ "line-cap": "round", "line-join": "round" }}
+            paint={{ "line-color": "rgba(255,255,255,0.72)", "line-width": 1.6, "line-dasharray": [3, 1.5] }} />
+          <Layer id="village-fill" type="fill" filter={["==", ["get", "part"], "village"]}
+            paint={{ "fill-color": "#ffffff", "fill-opacity": 0.08 }} />
+          <Layer id="village-outline" type="line" filter={["==", ["get", "part"], "village"]}
+            paint={{ "line-color": "rgba(255,255,255,0.6)", "line-width": 1 }} />
+        </Source>
+
+        {terrain?.villages.map((v) => (
+          <Marker key={v.id} latitude={v.lat} longitude={v.lon} anchor="center">
+            <div className="pointer-events-none px-1.5 py-[1px] rounded-full text-[9px] font-medium whitespace-nowrap"
+              style={{ background: "rgba(0,0,0,0.6)", color: C.text2, border: `1px solid ${C.line}` }}>
+              {v.name}
+            </div>
+          </Marker>
+        ))}
+
+        {/* ── Fausses sources actives (vérité terrain, masquées avec elle) ── */}
+        {showTruth && (world?.falseSources ?? []).map((f) => {
+          const meta = FALSE_SOURCES[f.kind as FalseSourceKind]
+          if (!meta) return null
+          return (
+            <Marker key={`fs-${f.id}`} latitude={f.lat} longitude={f.lon} anchor="bottom">
+              <div className="pointer-events-none flex items-center gap-1 pl-1 pr-1.5 py-[2px] rounded-full whitespace-nowrap"
+                title={meta.label}
+                style={{ background: "rgba(0,0,0,0.7)", border: `1px dashed ${alpha(C.fire, 0.6)}`, backdropFilter: "blur(6px)" }}>
+                <meta.Icon className="w-3 h-3" style={{ color: C.fire }} />
+                <span className="text-[9px] font-medium" style={{ color: C.text }}>{meta.short}</span>
+                <span className="text-[9px] tabular" style={{ color: C.text3 }}>{Math.max(0, Math.round(f.remaining))} s</span>
+              </div>
+            </Marker>
+          )
+        })}
+
         {/* ── Couverture passerelles ── */}
         <Source id="gateways" type="geojson" data={gatewayGJ}>
           <Layer id="gateways-fill" type="fill"

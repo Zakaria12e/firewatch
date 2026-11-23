@@ -7,6 +7,7 @@ import type {
   WorldState,
   AlertLevelPayload,
   Metrics,
+  FwEvent,
 } from "@/types"
 import { packetBus } from "@/lib/packetBus"
 
@@ -24,6 +25,7 @@ const DEFAULT_STATE: FireWatchState = {
 
 /** Les mesures arrivent paquet par paquet : on les regroupe avant de toucher React. */
 const NODE_FLUSH_MS = 1000
+const EVENTS_KEPT = 200
 
 export function useFireWatch() {
   const [state, setState] = useState<FireWatchState>(DEFAULT_STATE)
@@ -34,6 +36,7 @@ export function useFireWatch() {
     riskIndex: { value: 0 },
   })
   const [metrics, setMetrics] = useState<Metrics | null>(null)
+  const [events, setEvents] = useState<FwEvent[]>([])
   const socketRef = useRef<Socket | null>(null)
 
   useEffect(() => {
@@ -79,6 +82,14 @@ export function useFireWatch() {
 
     socket.on("world", (w: WorldState) => setWorld(w))
 
+    // Journal : historique à la connexion, puis événements en direct
+    socket.on("connect", () => {
+      fetch("/api/events").then((r) => r.json()).then((list: FwEvent[]) => setEvents(list.slice(-EVENTS_KEPT))).catch(() => {})
+    })
+    socket.on("event", (e: FwEvent) =>
+      setEvents((prev) => (prev.some((x) => x.id === e.id) ? prev : [...prev, e].slice(-EVENTS_KEPT)))
+    )
+
     socket.on("alert_level", (al: AlertLevelPayload) => setAlertLevel(al))
 
     socket.on("siren", (override: boolean | null) =>
@@ -114,5 +125,5 @@ export function useFireWatch() {
     []
   )
 
-  return { state, world, alertLevel, metrics, sendCommand }
+  return { state, world, alertLevel, metrics, events, sendCommand }
 }

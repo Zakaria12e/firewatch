@@ -11,7 +11,9 @@ import { decode } from "cbor-x"
 import { config, CENTER, PLACES } from "./config.js"
 import { nodeStatus, riskIndex } from "./detect.js"
 import { evaluate } from "./detection/index.js"
-import { distance, inPolygon } from "./geo.js"
+import { distance, inPolygon, offset } from "./geo.js"
+import { ROADS, VILLAGES, PARCELS, TERRAIN } from "./gis.js"
+import { FALSE_ALERT_LABEL } from "./detection/classifier.js"
 import { initStore, saveMeasurement, history, saveIncident, listIncidents, storeMode } from "./store.js"
 import { notify, buildMessage } from "./alerts.js"
 import { getWeather, getWeatherMode, setWeatherMode, setManualWeather, applyPreset } from "./weather.js"
@@ -41,6 +43,27 @@ let worldState = null            // dernier snapshot reçu de /api/sim/world
 let worldCommandQueue = []       // ordres en attente pour le moteur
 let lastWorldAt = 0              // timestamp du dernier POST /api/sim/world
 let resetAt = 0                  // réinitialisation : les mesures antérieures sont ignorées
+// Après un reset, des paquets mesurés avant peuvent encore arriver (retransmissions CoAP)
+const RESET_GRACE_MS = 3000
+
+// Journal d'événements (niveaux, fausses alertes, santé) : tampon circulaire
+const EVENTS_MAX = 300
+const eventLog = []
+let eventSeq = 0
+/** Événement du journal : {id, type, at, level?, kind?, label, reason?, nodes?, position?} */
+function pushEvent(ev) {
+  const e = { id: ++eventSeq, at: Date.now(), ...ev }
+  eventLog.push(e)
+  if (eventLog.length > EVENTS_MAX) eventLog.shift()
+  io.emit("event", e)
+  return e
+}
+
+// Épisodes de fausse alerte : un événement et un compteur par épisode, pas par évaluation.
+// La décision d'écarter un groupe est reprise à chaque évaluation (aucune mémoire ici).
+const FALSE_EPISODE_GAP_MS = 30_000
+const FALSE_EPISODE_RADIUS_M = 1500
+let falseEpisodes = []            // [{kind, position, lastSeen}]
 
 const sirenFor = (node) => {
   if (sirenOverride !== null) return sirenOverride
@@ -99,6 +122,8 @@ app.get("/api/incidents/:id", async (req, res) => {
   if (!inc) return res.status(404).json({ error: "incident introuvable" })
   res.json(inc)
 })
+app.get("/api/events", (_req, res) => res.json(eventLog))
+app.get("/api/gis", (_req, res) => res.json(TERRAIN))
 app.get("/api/settings", (_req, res) => res.json(getSettings()))
 app.get("/api/settings/defaults", (_req, res) => res.json(getDefaults()))
 app.put("/api/settings", (req, res) => {
@@ -164,6 +189,12 @@ app.post("/api/sim/world", (req, res) => {
 
   const cmds = [...worldCommandQueue]
   worldCommandQueue = []
+  // Le simulateur applique le reset à la réception de cette réponse : les mesures
+  // émises avant (encore enfumées) sont ignorées jusqu'à ce point
+  if (cmds.some((c) => c.type === "reset")) {
+    resetAt = Date.now()
+    for (const n of nodes.values()) n.readings = {}
+  }
   io.emit("world", worldState)
   res.json({ commands: cmds })
 })
@@ -177,6 +208,14 @@ app.post("/api/world/command", (req, res) => {
     resetAll()
     return res.json({ ok: true, queued: worldCommandQueue.length })
   }
+  // Un brûlage lancé depuis le dashboard est un brûlage déclaré : l'opérateur déclare la
+  // zone en même temps (marquée « auto », retirée à la réinitialisation)
+  if (cmd.type === "scenario" && cmd.name === "brulage" && PARCELS[0]) {
+    declareBurnZone({ id: `auto-${PARCELS[0].id}`, name: PARCELS[0].name, polygon: PARCELS[0].polygon })
+  }
+  if (cmd.type === "false_source" && cmd.kind === "brulage" && Number.isFinite(cmd.lat) && Number.isFinite(cmd.lon)) {
+    declareBurnZone({ id: `auto-brulage-${Date.now()}`, name: "Brûlage déclaré", polygon: circlePolygon(cmd, 200) })
+  }
   worldCommandQueue.push(cmd)
   res.json({ ok: true, queued: worldCommandQueue.length })
 })
@@ -188,6 +227,21 @@ app.post("/api/scenario/fire", (req, res) => {
   res.json({ ok: true })
 })
 
+/** Ajoute une zone de brûlage déclarée (remplace une zone de même id). */
+function declareBurnZone(zone) {
+  const zones = (getSettings().burnZones || []).filter((z) => z.id !== zone.id)
+  updateSettings({ burnZones: [...zones, { ...zone, auto: true }] })
+  pushEvent({ type: "zone", label: `Zone de brûlage déclarée : ${zone.name}` })
+}
+
+function circlePolygon(center, radiusM, n = 16) {
+  return Array.from({ length: n }, (_, i) => {
+    const a = (i / n) * 2 * Math.PI
+    const p = offset(center, radiusM * Math.cos(a), radiusM * Math.sin(a))
+    return [p.lat, p.lon]
+  })
+}
+
 /** Réinitialisation : monde, incident en cours et mesures antérieures ignorées. */
 function resetAll() {
   worldCommandQueue.push({ type: "reset" })
@@ -198,6 +252,10 @@ function resetAll() {
   recordFireReset()
   _pendingTimeline = []
   _prevLevel = "veille"
+  falseEpisodes = []
+  // Zones de brûlage déclarées automatiquement (scénario, palette) : retirées
+  updateSettings({ burnZones: (getSettings().burnZones || []).filter((z) => !z.auto) })
+  pushEvent({ type: "reset", label: "Réinitialisation du monde" })
 }
 
 app.post("/api/scenario/reset", (_req, res) => {
@@ -234,6 +292,44 @@ function closeIncident(reason) {
   console.log(`🧯 Incident ${incident.id} ${reason}`)
 }
 
+const LEVEL_TEXT = {
+  veille: "Veille", vigilance: "Vigilance", suspicion: "Suspicion",
+  "pré-alerte": "Pré-alerte", feu_confirmé: "Feu confirmé", maîtrisé: "Maîtrisé",
+}
+const levelText = (l) => LEVEL_TEXT[l] ?? l
+
+/**
+ * Fausses alertes écartées par le pipeline : un événement « fausse alerte évitée » et
+ * un point au compteur à chaque nouvel épisode (même cause, même secteur, sans
+ * interruption de plus de 30 s).
+ */
+function trackFalseAlerts(list, now) {
+  // Épisodes encore ouverts (vus il y a moins de 30 s)
+  falseEpisodes = falseEpisodes.filter((ep) => now - ep.lastSeen <= FALSE_EPISODE_GAP_MS)
+  for (const fa of list) {
+    // Même cause, à moins de 1,5 km d'un épisode ouvert : même épisode (le groupe de
+    // capteurs et donc la position estimée varient d'une évaluation à l'autre)
+    const ep = falseEpisodes.find((e) => e.kind === fa.kind &&
+      (!e.position || !fa.position || distance(e.position, fa.position) <= FALSE_EPISODE_RADIUS_M))
+    if (ep) {
+      ep.lastSeen = now
+      if (fa.position) ep.position = fa.position
+      continue
+    }
+    recordFalseAlertAvoided(fa.kind)
+    const label = `Fausse alerte évitée : ${FALSE_ALERT_LABEL[fa.kind] ?? fa.kind}`
+    pushEvent({
+      type: "fausse_alerte", kind: fa.kind, label, reason: fa.reason, detail: fa.label,
+      nodes: fa.nodes, position: fa.position ?? null,
+    })
+    console.log(`✅ ${label} (${fa.reason})`)
+    const entry = { type: "fausse_alerte", at: now, label, reason: fa.reason }
+    if (incident?.status === "actif") incident.timeline = [...(incident.timeline || []), entry]
+    else _pendingTimeline.push(entry)
+    falseEpisodes.push({ kind: fa.kind, position: fa.position ?? null, lastSeen: now })
+  }
+}
+
 async function runDetection() {
   const now = Date.now()
   if (now - lastEval < 1000) return
@@ -243,14 +339,17 @@ async function runDetection() {
   const detContext = {
     worldWeather: worldState?.weather,
     timeScale: worldState?.timeScale ?? config.timeScale,
-    // Zones de brûlage déclarées (page Paramètres) : polygones [[lat, lon], …]
-    burnZones: (settings.burnZones || []).map((z) => z.polygon).filter((p) => Array.isArray(p) && p.length >= 3),
+    // Zones de brûlage déclarées (page Paramètres, scénario) : {name, polygon:[[lat, lon], …]}
+    burnZones: (settings.burnZones || []).filter((z) => Array.isArray(z.polygon) && z.polygon.length >= 3),
+    // Carte statique de la zone (SIG) : piste et hameau
+    roads: ROADS,
+    villages: VILLAGES,
     settings: { thresholds: settings.thresholds, fusion: settings.fusion },
   }
   // Nœuds qui ont des mesures, reçues après la dernière réinitialisation (sinon les
   // dernières mesures du feu précédent rouvriraient aussitôt l'incident)
   const measured = [...nodes.values()].filter((n) =>
-    n.readings && Object.keys(n.readings).length && n.ts > resetAt)
+    n.readings && Object.keys(n.readings).length && n.ts > resetAt + RESET_GRACE_MS)
   const result = evaluate(measured, now, detContext)
   if (result.suspects.length) lastSuspectAt = now
 
@@ -261,7 +360,7 @@ async function runDetection() {
   // Métriques de détection
   if (result.level === "suspicion" || result.level === "pré-alerte") recordSuspicion(now)
   if (result.confirmed) recordConfirmation(now)
-  if (result.falseAlert) recordFalseAlertAvoided()
+  trackFalseAlerts(result.falseAlerts || [], now)
 
   // Émettre le niveau d'alerte courant + vent mesuré par les capteurs (dashboard)
   io.emit("alert_level", {
@@ -271,11 +370,18 @@ async function runDetection() {
     wind: result.wind,
   })
 
-  // Suivi des transitions de niveau (timeline)
-  if (result.level !== _prevLevel && result.level !== "veille") {
-    _pendingTimeline.push({ type: result.level, at: now })
+  // Suivi des transitions de niveau (timeline + journal)
+  if (result.level !== _prevLevel) {
+    const reason = result.suspects.length
+      ? `score ${result.score}, capteurs ${result.suspects.join(", ")}`
+      : result.level === "vigilance" ? `indice de risque ${result.riskIndex?.value ?? "?"}` : "plus d'indicateur actif"
+    pushEvent({ type: "niveau", level: result.level, label: levelText(result.level), reason, nodes: result.suspects })
+    if (result.level !== "veille") _pendingTimeline.push({ type: result.level, at: now, reason })
   }
   _prevLevel = result.level
+  for (const e of result.events || []) {
+    if (e.type === "santé") pushEvent({ type: "santé", kind: e.fault, label: `${e.nodeId} : ${e.fault.replace("_", " ")}`, reason: (e.reasons || []).join(", "), nodes: [e.nodeId] })
+  }
 
   if (result.confirmed) {
     const isNew = !incident || incident.status !== "actif"
@@ -363,6 +469,8 @@ function ingestSenml(pack, extra) {
     risk: riskIndex(readings),
     // Passerelles : statistiques toutes les 30 s par leur backhaul (période fixe)
     period: extra.kind === "gateway" ? 30 : orderedPeriod(danger, extra.minPeriodS),
+    // l'envoi suivant a été programmé avec la période précédente
+    expectedGap: Math.max(prev?.period ?? 0, extra.kind === "gateway" ? 30 : orderedPeriod(danger, extra.minPeriodS)),
     bytes: extra.bytes,
     gw: typeof v.gw === "string" ? v.gw : null,   // passerelle qui a relayé le paquet
     seq: v.seq,
